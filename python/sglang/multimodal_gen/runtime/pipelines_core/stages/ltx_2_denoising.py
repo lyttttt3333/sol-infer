@@ -1,5 +1,6 @@
 import math
-from contextlib import contextmanager
+import os
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 
 import torch
@@ -43,6 +44,9 @@ from sglang.multimodal_gen.runtime.server_args import (
     ServerArgs,
     is_ltx2_two_stage_pipeline_name,
 )
+from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
+
+logger = init_logger(__name__)
 
 LTX23_RES2S_STEP_NOISE_SEED = -1
 LTX23_RES2S_SUBSTEP_NOISE_SEED = 9999
@@ -89,12 +93,214 @@ class LTX2ModelInputs:
     v2a_cross_attention_mask: torch.Tensor | None
 
 
+def _ltx2_cuda_graph_env_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_CUDA_GRAPH", "0") == "1"
+
+
+def _ltx2_preproject_prompts_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_PREPROJECT_PROMPTS", "0") == "1"
+
+
+def _ltx2_share_block0_self_attn_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_SHARE_BLOCK0_SELF_ATTN", "0") == "1"
+
+
+def _ltx2_compile_mark_step_begin_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_COMPILE_MARK_STEP_BEGIN", "0") == "1"
+
+
+def _ltx2_maybe_mark_compile_step_begin(server_args: ServerArgs) -> None:
+    if (
+        not server_args.enable_torch_compile
+        or not _ltx2_compile_mark_step_begin_enabled()
+    ):
+        return
+    compiler = getattr(torch, "compiler", None)
+    mark_step_begin = getattr(compiler, "cudagraph_mark_step_begin", None)
+    if mark_step_begin is not None:
+        mark_step_begin()
+
+
+def _ltx2_compile_prewarm_perturbation_masks_enabled() -> bool:
+    return (
+        os.environ.get("SGLANG_LTX2_COMPILE_PREWARM_PERTURBATION_MASKS", "0")
+        == "1"
+    )
+
+
+def _ltx2_maybe_prewarm_perturbation_masks(
+    model: object,
+    server_args: ServerArgs,
+    model_kwargs: dict[str, object],
+) -> None:
+    if (
+        not server_args.enable_torch_compile
+        or not _ltx2_compile_prewarm_perturbation_masks_enabled()
+    ):
+        return
+
+    perturbation_configs = model_kwargs.get("perturbation_configs")
+    if perturbation_configs is None:
+        return
+    hidden_states = model_kwargs.get("hidden_states")
+    audio_hidden_states = model_kwargs.get("audio_hidden_states")
+    if not torch.is_tensor(hidden_states) or not torch.is_tensor(audio_hidden_states):
+        return
+
+    transformer_blocks = getattr(model, "transformer_blocks", None)
+    if transformer_blocks is None:
+        return
+    block_indices = tuple(getattr(block, "idx", -1) for block in transformer_blocks)
+
+    from sglang.multimodal_gen.runtime.models.dits.ltx_2 import (
+        _ltx2_build_batched_perturbation_states,
+    )
+
+    _ltx2_build_batched_perturbation_states(
+        perturbation_configs,
+        "skip_video_self_attn_blocks",
+        block_indices,
+        hidden_states,
+    )
+    _ltx2_build_batched_perturbation_states(
+        perturbation_configs,
+        "skip_audio_self_attn_blocks",
+        block_indices,
+        audio_hidden_states,
+    )
+    _ltx2_build_batched_perturbation_states(
+        perturbation_configs,
+        "skip_a2v_cross_attn",
+        block_indices,
+        hidden_states,
+    )
+    _ltx2_build_batched_perturbation_states(
+        perturbation_configs,
+        "skip_v2a_cross_attn",
+        block_indices,
+        audio_hidden_states,
+    )
+
+
+def _ltx2_cuda_graph_warmup_calls() -> int:
+    value = os.environ.get("SGLANG_LTX2_CUDA_GRAPH_WARMUP_CALLS", "1")
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return 1
+
+
+def _ltx2_cuda_graph_non_tensor_signature(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, tuple):
+        return tuple(_ltx2_cuda_graph_non_tensor_signature(item) for item in value)
+    if isinstance(value, list):
+        return tuple(_ltx2_cuda_graph_non_tensor_signature(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(
+            (key, _ltx2_cuda_graph_non_tensor_signature(item))
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        )
+    return repr(value)
+
+
+def _ltx2_cuda_graph_key(
+    ctx: LTX2DenoisingContext,
+    model: object,
+    model_kwargs: dict[str, object],
+) -> tuple[object, ...]:
+    items: list[tuple[str, object]] = []
+    for name, value in sorted(model_kwargs.items()):
+        if torch.is_tensor(value):
+            items.append(
+                (
+                    name,
+                    (
+                        "tensor",
+                        tuple(value.shape),
+                        str(value.dtype),
+                        str(value.device),
+                        bool(value.requires_grad),
+                    ),
+                )
+            )
+        else:
+            items.append((name, _ltx2_cuda_graph_non_tensor_signature(value)))
+    return (id(model), ctx.stage, tuple(items))
+
+
+def _ltx2_clone_graph_output(value: object) -> object:
+    if torch.is_tensor(value):
+        return value.clone()
+    if isinstance(value, tuple):
+        return tuple(_ltx2_clone_graph_output(item) for item in value)
+    if isinstance(value, list):
+        return [_ltx2_clone_graph_output(item) for item in value]
+    return value
+
+
+class _LTX2CudaGraphModelCall:
+    def __init__(
+        self,
+        model: object,
+        model_kwargs: dict[str, object],
+        *,
+        name: str,
+        graph_pool: object | None,
+    ) -> None:
+        self.model = model
+        self.name = name
+        self.graph_pool = graph_pool
+        self.warmup_remaining = _ltx2_cuda_graph_warmup_calls()
+        self.graph: torch.cuda.CUDAGraph | None = None
+        self.output: object | None = None
+        self.static_kwargs: dict[str, object] = {}
+        for key, value in model_kwargs.items():
+            if torch.is_tensor(value):
+                self.static_kwargs[key] = torch.empty_like(value)
+            else:
+                self.static_kwargs[key] = value
+
+    def _copy_inputs(self, model_kwargs: dict[str, object]) -> None:
+        for key, value in model_kwargs.items():
+            static_value = self.static_kwargs[key]
+            if torch.is_tensor(value):
+                assert torch.is_tensor(static_value)
+                static_value.copy_(value)
+            else:
+                self.static_kwargs[key] = value
+
+    def __call__(self, model_kwargs: dict[str, object]):
+        if self.graph is None and self.warmup_remaining > 0:
+            self.warmup_remaining -= 1
+            return self.model(**model_kwargs)
+
+        self._copy_inputs(model_kwargs)
+        if self.graph is None:
+            torch.cuda.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            logger.info("Capturing LTX2 CUDA graph for %s", self.name)
+            graph_kwargs = {"pool": self.graph_pool} if self.graph_pool is not None else {}
+            with torch.cuda.graph(graph, **graph_kwargs):
+                self.output = self.model(**self.static_kwargs)
+            torch.cuda.synchronize()
+            self.graph = graph
+            logger.info("Captured LTX2 CUDA graph for %s", self.name)
+            return _ltx2_clone_graph_output(self.output)
+
+        self.graph.replay()
+        return _ltx2_clone_graph_output(self.output)
+
+
 @dataclass(slots=True)
 class LTX2GuidancePassSpec:
     name: str
     encoder_hidden_states: torch.Tensor
     audio_encoder_hidden_states: torch.Tensor
     encoder_attention_mask: torch.Tensor | None
+    encoder_hidden_states_projected: bool = False
+    audio_encoder_hidden_states_projected: bool = False
     skip_video_self_attn_blocks: tuple[int, ...] = ()
     skip_audio_self_attn_blocks: tuple[int, ...] = ()
     disable_a2v_cross_attn: bool = False
@@ -136,6 +342,264 @@ class LTX2DenoisingStage(DenoisingStage):
             transformer=transformer, scheduler=scheduler, vae=vae, **kwargs
         )
         self.sampler_name = sampler_name
+        self._ltx2_cuda_graph_calls: dict[tuple[object, ...], _LTX2CudaGraphModelCall] = {}
+        self._ltx2_cuda_graph_pool = (
+            torch.cuda.graph_pool_handle() if torch.cuda.is_available() else None
+        )
+        self._ltx2_rope_coords_cache: dict[tuple[object, ...], torch.Tensor] = {}
+        self._ltx2_prompt_projection_cache: dict[
+            tuple[object, ...], tuple[torch.Tensor, torch.Tensor]
+        ] = {}
+
+    def _should_use_ltx2_cuda_graph(
+        self,
+        ctx: LTX2DenoisingContext,
+        server_args: ServerArgs,
+    ) -> bool:
+        if not _ltx2_cuda_graph_env_enabled():
+            return False
+        if not torch.cuda.is_available():
+            return False
+        if int(server_args.num_gpus) != 1:
+            return False
+        if get_sp_world_size() != 1:
+            return False
+        if get_classifier_free_guidance_world_size() != 1:
+            return False
+        if server_args.enable_cfg_parallel:
+            return False
+        if ctx.replicate_audio_for_sp:
+            return False
+        return True
+
+    def _call_ltx2_model(
+        self,
+        ctx: LTX2DenoisingContext,
+        step: DenoisingStepState,
+        batch: Req,
+        server_args: ServerArgs,
+        model_kwargs: dict[str, object],
+    ):
+        _ltx2_maybe_prewarm_perturbation_masks(
+            step.current_model, server_args, model_kwargs
+        )
+        _ltx2_maybe_mark_compile_step_begin(server_args)
+        model_kwargs = self._maybe_preproject_ltx2_model_kwargs(
+            step.current_model, model_kwargs
+        )
+        if not self._should_use_ltx2_cuda_graph(ctx, server_args):
+            return step.current_model(**model_kwargs)
+        key = _ltx2_cuda_graph_key(ctx, step.current_model, model_kwargs)
+        graph_call = self._ltx2_cuda_graph_calls.get(key)
+        if graph_call is None:
+            graph_call = _LTX2CudaGraphModelCall(
+                step.current_model,
+                model_kwargs,
+                name=f"{ctx.stage}:step{step.step_index}:shape{tuple(model_kwargs['hidden_states'].shape)}",
+                graph_pool=self._ltx2_cuda_graph_pool,
+            )
+            self._ltx2_cuda_graph_calls[key] = graph_call
+        return graph_call(model_kwargs)
+
+    @staticmethod
+    def _ltx2_prompt_projection_signature(
+        model: object,
+        encoder_hidden_states: torch.Tensor,
+        audio_encoder_hidden_states: torch.Tensor,
+    ) -> tuple[object, ...]:
+        def tensor_sig(tensor: torch.Tensor) -> tuple[object, ...]:
+            return (
+                tensor.data_ptr(),
+                tuple(tensor.shape),
+                tuple(tensor.stride()),
+                tensor.dtype,
+                tensor.device,
+                getattr(tensor, "_version", 0),
+            )
+
+        def module_sig(module: object | None) -> tuple[object, ...] | None:
+            if module is None:
+                return None
+            named_parameters = getattr(module, "named_parameters", None)
+            if named_parameters is None:
+                return (id(module),)
+            parts: list[tuple[str, object, object, object, object, object]] = []
+            for name, param in named_parameters(recurse=True):
+                parts.append(
+                    (
+                        name,
+                        param.data_ptr(),
+                        tuple(param.shape),
+                        param.dtype,
+                        param.device,
+                        getattr(param, "_version", 0),
+                    )
+                )
+            return tuple(parts)
+
+        return (
+            id(model),
+            tensor_sig(encoder_hidden_states),
+            tensor_sig(audio_encoder_hidden_states),
+            module_sig(getattr(model, "caption_projection", None)),
+            module_sig(getattr(model, "audio_caption_projection", None)),
+        )
+
+    def _maybe_preproject_ltx2_prompts(
+        self,
+        model: object,
+        encoder_hidden_states: torch.Tensor,
+        audio_encoder_hidden_states: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, bool, bool]:
+        if not _ltx2_preproject_prompts_enabled():
+            return (
+                encoder_hidden_states,
+                audio_encoder_hidden_states,
+                False,
+                False,
+            )
+        caption_projection = getattr(model, "caption_projection", None)
+        audio_caption_projection = getattr(model, "audio_caption_projection", None)
+        if caption_projection is None and audio_caption_projection is None:
+            return (
+                encoder_hidden_states,
+                audio_encoder_hidden_states,
+                False,
+                False,
+            )
+
+        key = self._ltx2_prompt_projection_signature(
+            model, encoder_hidden_states, audio_encoder_hidden_states
+        )
+        cached = self._ltx2_prompt_projection_cache.get(key)
+        if cached is not None:
+            projected_encoder, projected_audio = cached
+            return (
+                projected_encoder,
+                projected_audio,
+                caption_projection is not None,
+                audio_caption_projection is not None,
+            )
+
+        with torch.no_grad():
+            with torch.profiler.record_function("ltx2_prompt_projection::preproject"):
+                projected_encoder = (
+                    caption_projection(encoder_hidden_states)
+                    if caption_projection is not None
+                    else encoder_hidden_states
+                )
+                projected_audio = (
+                    audio_caption_projection(audio_encoder_hidden_states)
+                    if audio_caption_projection is not None
+                    else audio_encoder_hidden_states
+                )
+        if len(self._ltx2_prompt_projection_cache) >= 16:
+            self._ltx2_prompt_projection_cache.clear()
+        self._ltx2_prompt_projection_cache[key] = (
+            projected_encoder,
+            projected_audio,
+        )
+        return (
+            projected_encoder,
+            projected_audio,
+            caption_projection is not None,
+            audio_caption_projection is not None,
+        )
+
+    def _maybe_preproject_ltx2_model_kwargs(
+        self, model: object, model_kwargs: dict[str, object]
+    ) -> dict[str, object]:
+        if (
+            not _ltx2_preproject_prompts_enabled()
+            or model_kwargs.get("encoder_hidden_states_projected", False)
+            or model_kwargs.get("audio_encoder_hidden_states_projected", False)
+        ):
+            return model_kwargs
+        encoder_hidden_states = model_kwargs.get("encoder_hidden_states")
+        audio_encoder_hidden_states = model_kwargs.get("audio_encoder_hidden_states")
+        if not torch.is_tensor(encoder_hidden_states) or not torch.is_tensor(
+            audio_encoder_hidden_states
+        ):
+            return model_kwargs
+        (
+            projected_encoder,
+            projected_audio,
+            encoder_projected,
+            audio_projected,
+        ) = self._maybe_preproject_ltx2_prompts(
+            model, encoder_hidden_states, audio_encoder_hidden_states
+        )
+        if not encoder_projected and not audio_projected:
+            return model_kwargs
+        updated = dict(model_kwargs)
+        updated["encoder_hidden_states"] = projected_encoder
+        updated["audio_encoder_hidden_states"] = projected_audio
+        updated["encoder_hidden_states_projected"] = encoder_projected
+        updated["audio_encoder_hidden_states_projected"] = audio_projected
+        return updated
+
+    def _get_ltx2_cuda_graph_video_coords(
+        self,
+        model: object,
+        batch_size: int,
+        num_frames: int,
+        height: int,
+        width: int,
+        device: torch.device,
+        fps: float,
+        start_frame: int = 0,
+    ) -> torch.Tensor:
+        key = (
+            "video",
+            id(getattr(model, "rope", None)),
+            batch_size,
+            num_frames,
+            height,
+            width,
+            str(device),
+            float(fps),
+            start_frame,
+        )
+        cached = self._ltx2_rope_coords_cache.get(key)
+        if cached is None:
+            cached = model.rope.prepare_video_coords(
+                batch_size=batch_size,
+                num_frames=num_frames,
+                height=height,
+                width=width,
+                device=device,
+                fps=fps,
+                start_frame=start_frame,
+            )
+            self._ltx2_rope_coords_cache[key] = cached
+        return cached
+
+    def _get_ltx2_cuda_graph_audio_coords(
+        self,
+        model: object,
+        batch_size: int,
+        num_frames: int,
+        device: torch.device,
+        start_frame: int = 0,
+    ) -> torch.Tensor:
+        key = (
+            "audio",
+            id(getattr(model, "audio_rope", None)),
+            batch_size,
+            num_frames,
+            str(device),
+            start_frame,
+        )
+        cached = self._ltx2_rope_coords_cache.get(key)
+        if cached is None:
+            cached = model.audio_rope.prepare_audio_coords(
+                batch_size=batch_size,
+                num_frames=num_frames,
+                device=device,
+                start_frame=start_frame,
+            )
+            self._ltx2_rope_coords_cache[key] = cached
+        return cached
 
     @staticmethod
     def _randn_like_with_batch_generators(
@@ -166,6 +630,20 @@ class LTX2DenoisingStage(DenoisingStage):
         if self.server_args.enable_cfg_parallel:
             return StageParallelismType.CFG_PARALLEL
         return StageParallelismType.REPLICATED
+
+    def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+        try:
+            return super().forward(batch, server_args)
+        finally:
+            if os.environ.get("SGLANG_DIFFUSION_LTX2_EVENT_PROFILE", "0") == "1":
+                try:
+                    from sglang.multimodal_gen.runtime.models.dits.ltx_2 import (
+                        _ltx2_dump_event_profile,
+                    )
+
+                    _ltx2_dump_event_profile()
+                except Exception as exc:
+                    self.log_warning("Failed to dump LTX2 event profile: %s", exc)
 
     @staticmethod
     def _combine_cfg_parallel_av(
@@ -295,7 +773,7 @@ class LTX2DenoisingStage(DenoisingStage):
         ):
             for idx in indices_to_run:
                 _, kwargs = all_passes[idx]
-                v, a = step.current_model(**kwargs)
+                v, a = self._call_ltx2_model(ctx, step, batch, server_args, kwargs)
                 local_videos.append(v.float())
                 local_audios.append(a.float())
 
@@ -1158,6 +1636,24 @@ class LTX2DenoisingStage(DenoisingStage):
             )
 
         batch_size = int(latent_model_input.shape[0])
+        if self._should_use_ltx2_cuda_graph(ctx, server_args):
+            if video_coords is None:
+                video_coords = self._get_ltx2_cuda_graph_video_coords(
+                    step.current_model,
+                    batch_size,
+                    ctx.latent_num_frames_for_model,
+                    ctx.latent_height,
+                    ctx.latent_width,
+                    latent_model_input.device,
+                    batch.fps,
+                )
+            if audio_coords is None:
+                audio_coords = self._get_ltx2_cuda_graph_audio_coords(
+                    step.current_model,
+                    batch_size,
+                    audio_num_frames_latent,
+                    audio_latent_model_input.device,
+                )
         use_raw_sigma_timestep = ctx.use_ltx23_hq_timestep_semantics
         use_ltx23_two_stage_prompt_timestep = (
             ctx.is_ltx23_variant and not ctx.use_ltx23_legacy_one_stage
@@ -1304,6 +1800,8 @@ class LTX2DenoisingStage(DenoisingStage):
         encoder_hidden_states: torch.Tensor,
         audio_encoder_hidden_states: torch.Tensor,
         encoder_attention_mask: torch.Tensor | None,
+        encoder_hidden_states_projected: bool = False,
+        audio_encoder_hidden_states_projected: bool = False,
         skip_video_self_attn_blocks: tuple[int, ...] | None = None,
         skip_audio_self_attn_blocks: tuple[int, ...] | None = None,
         disable_a2v_cross_attn: bool = False,
@@ -1313,6 +1811,10 @@ class LTX2DenoisingStage(DenoisingStage):
         kwargs = dict(base_model_kwargs)
         kwargs["encoder_hidden_states"] = encoder_hidden_states
         kwargs["audio_encoder_hidden_states"] = audio_encoder_hidden_states
+        kwargs["encoder_hidden_states_projected"] = encoder_hidden_states_projected
+        kwargs["audio_encoder_hidden_states_projected"] = (
+            audio_encoder_hidden_states_projected
+        )
         if self._should_pass_ltx2_text_attention_mask(ctx):
             kwargs["encoder_attention_mask"] = encoder_attention_mask
             kwargs["audio_encoder_attention_mask"] = encoder_attention_mask
@@ -1448,13 +1950,37 @@ class LTX2DenoisingStage(DenoisingStage):
         ctx: LTX2DenoisingContext,
         step: DenoisingStepState,
     ):
-        with self._temporary_ltx23_hq_timestep_semantics(
-            step.current_model, ctx.use_ltx23_hq_timestep_semantics
-        ):
-            with set_forward_context(
-                current_timestep=step.step_index, attn_metadata=step.attn_metadata
-            ):
-                yield
+        profile_ctx = (
+            torch.profiler.record_function(
+                f"ltx2_dit_forward::{ctx.stage}::step_{step.step_index}"
+            )
+            if os.environ.get("SGLANG_DIFFUSION_RECORD_FUNCTIONS", "0") == "1"
+            else nullcontext()
+        )
+        current_model = step.current_model
+        previous_phase = getattr(current_model, "_sgl_ltx2_profile_phase", None)
+        previous_step = getattr(current_model, "_sgl_ltx2_profile_step", None)
+        current_model._sgl_ltx2_profile_phase = ctx.stage
+        current_model._sgl_ltx2_profile_step = step.step_index
+        try:
+            with profile_ctx:
+                with self._temporary_ltx23_hq_timestep_semantics(
+                    current_model, ctx.use_ltx23_hq_timestep_semantics
+                ):
+                    with set_forward_context(
+                        current_timestep=step.step_index,
+                        attn_metadata=step.attn_metadata,
+                    ):
+                        yield
+        finally:
+            if previous_phase is None:
+                delattr(current_model, "_sgl_ltx2_profile_phase")
+            else:
+                current_model._sgl_ltx2_profile_phase = previous_phase
+            if previous_step is None:
+                delattr(current_model, "_sgl_ltx2_profile_step")
+            else:
+                current_model._sgl_ltx2_profile_step = previous_step
 
     def _prepare_denoising_loop(
         self,
@@ -1739,7 +2265,9 @@ class LTX2DenoisingStage(DenoisingStage):
                         )
 
             with self._ltx2_model_forward_context(ctx, step):
-                model_video, model_audio = step.current_model(**model_kwargs)
+                model_video, model_audio = self._call_ltx2_model(
+                    ctx, step, batch, server_args, model_kwargs
+                )
 
             model_video = model_video.float()
             model_audio = model_audio.float()
@@ -1835,7 +2363,9 @@ class LTX2DenoisingStage(DenoisingStage):
                                 )
 
                         with self._ltx2_model_forward_context(ctx, step):
-                            mid_v, mid_a = step.current_model(**model_kwargs_local)
+                            mid_v, mid_a = self._call_ltx2_model(
+                                ctx, step, batch, server_args, model_kwargs_local
+                            )
 
                         mid_v = mid_v.float()
                         mid_a = mid_a.float()
@@ -1969,29 +2499,27 @@ class LTX2DenoisingStage(DenoisingStage):
 
                 if ctx.use_ltx23_legacy_one_stage:
                     with self._ltx2_model_forward_context(ctx, step):
-                        v_pos, a_v_pos = step.current_model(
-                            **self._build_ltx2_model_kwargs(
-                                ctx,
-                                base_model_kwargs_local,
-                                encoder_hidden_states=encoder_hidden_states,
-                                audio_encoder_hidden_states=audio_encoder_hidden_states,
-                                encoder_attention_mask=encoder_attention_mask,
-                                disable_v2a_cross_attn=(
-                                    skip_v2a_cross_attn_for_video_gt
-                                ),
-                            )
+                        pos_kwargs = self._build_ltx2_model_kwargs(
+                            ctx,
+                            base_model_kwargs_local,
+                            encoder_hidden_states=encoder_hidden_states,
+                            audio_encoder_hidden_states=audio_encoder_hidden_states,
+                            encoder_attention_mask=encoder_attention_mask,
+                            disable_v2a_cross_attn=(skip_v2a_cross_attn_for_video_gt),
                         )
-                        v_neg, a_v_neg = step.current_model(
-                            **self._build_ltx2_model_kwargs(
-                                ctx,
-                                base_model_kwargs_local,
-                                encoder_hidden_states=negative_encoder_hidden_states,
-                                audio_encoder_hidden_states=negative_audio_encoder_hidden_states,
-                                encoder_attention_mask=negative_encoder_attention_mask,
-                                disable_v2a_cross_attn=(
-                                    skip_v2a_cross_attn_for_video_gt
-                                ),
-                            )
+                        v_pos, a_v_pos = self._call_ltx2_model(
+                            ctx, step, batch, server_args, pos_kwargs
+                        )
+                        neg_kwargs = self._build_ltx2_model_kwargs(
+                            ctx,
+                            base_model_kwargs_local,
+                            encoder_hidden_states=negative_encoder_hidden_states,
+                            audio_encoder_hidden_states=negative_audio_encoder_hidden_states,
+                            encoder_attention_mask=negative_encoder_attention_mask,
+                            disable_v2a_cross_attn=(skip_v2a_cross_attn_for_video_gt),
+                        )
+                        v_neg, a_v_neg = self._call_ltx2_model(
+                            ctx, step, batch, server_args, neg_kwargs
                         )
 
                     v_pos = v_pos.float()
@@ -2003,8 +2531,12 @@ class LTX2DenoisingStage(DenoisingStage):
                     a_v_ptb = None
                     if need_perturbed:
                         with self._ltx2_model_forward_context(ctx, step):
-                            v_ptb, a_v_ptb = step.current_model(
-                                **self._build_ltx2_model_kwargs(
+                            v_ptb, a_v_ptb = self._call_ltx2_model(
+                                ctx,
+                                step,
+                                batch,
+                                server_args,
+                                self._build_ltx2_model_kwargs(
                                     ctx,
                                     base_model_kwargs_local,
                                     encoder_hidden_states=encoder_hidden_states,
@@ -2019,7 +2551,7 @@ class LTX2DenoisingStage(DenoisingStage):
                                     disable_v2a_cross_attn=(
                                         skip_v2a_cross_attn_for_video_gt
                                     ),
-                                )
+                                ),
                             )
                         v_ptb = v_ptb.float()
                         a_v_ptb = a_v_ptb.float()
@@ -2028,29 +2560,58 @@ class LTX2DenoisingStage(DenoisingStage):
                     a_v_mod = None
                     if need_modality:
                         with self._ltx2_model_forward_context(ctx, step):
-                            v_mod, a_v_mod = step.current_model(
-                                **self._build_ltx2_model_kwargs(
-                                    ctx,
-                                    base_model_kwargs_local,
-                                    encoder_hidden_states=encoder_hidden_states,
-                                    audio_encoder_hidden_states=audio_encoder_hidden_states,
-                                    encoder_attention_mask=encoder_attention_mask,
-                                    disable_a2v_cross_attn=True,
-                                    disable_v2a_cross_attn=True,
-                                )
+                            mod_kwargs = self._build_ltx2_model_kwargs(
+                                ctx,
+                                base_model_kwargs_local,
+                                encoder_hidden_states=encoder_hidden_states,
+                                audio_encoder_hidden_states=audio_encoder_hidden_states,
+                                encoder_attention_mask=encoder_attention_mask,
+                                disable_a2v_cross_attn=True,
+                                disable_v2a_cross_attn=True,
+                            )
+                            v_mod, a_v_mod = self._call_ltx2_model(
+                                ctx, step, batch, server_args, mod_kwargs
                             )
                         v_mod = v_mod.float()
                         a_v_mod = a_v_mod.float()
                 else:
+                    def make_ltx2_pass_spec(
+                        *,
+                        name: str,
+                        encoder_hidden_states: torch.Tensor,
+                        audio_encoder_hidden_states: torch.Tensor,
+                        encoder_attention_mask: torch.Tensor | None,
+                        **kwargs: object,
+                    ) -> LTX2GuidancePassSpec:
+                        (
+                            projected_encoder_hidden_states,
+                            projected_audio_encoder_hidden_states,
+                            encoder_projected,
+                            audio_projected,
+                        ) = self._maybe_preproject_ltx2_prompts(
+                            step.current_model,
+                            encoder_hidden_states,
+                            audio_encoder_hidden_states,
+                        )
+                        return LTX2GuidancePassSpec(
+                            name=name,
+                            encoder_hidden_states=projected_encoder_hidden_states,
+                            audio_encoder_hidden_states=projected_audio_encoder_hidden_states,
+                            encoder_attention_mask=encoder_attention_mask,
+                            encoder_hidden_states_projected=encoder_projected,
+                            audio_encoder_hidden_states_projected=audio_projected,
+                            **kwargs,
+                        )
+
                     pass_specs: list[LTX2GuidancePassSpec] = [
-                        LTX2GuidancePassSpec(
+                        make_ltx2_pass_spec(
                             name="cond",
                             encoder_hidden_states=encoder_hidden_states,
                             audio_encoder_hidden_states=audio_encoder_hidden_states,
                             encoder_attention_mask=encoder_attention_mask,
                             disable_v2a_cross_attn=skip_v2a_cross_attn_for_video_gt,
                         ),
-                        LTX2GuidancePassSpec(
+                        make_ltx2_pass_spec(
                             name="neg",
                             encoder_hidden_states=negative_encoder_hidden_states,
                             audio_encoder_hidden_states=negative_audio_encoder_hidden_states,
@@ -2060,7 +2621,7 @@ class LTX2DenoisingStage(DenoisingStage):
                     ]
                     if need_perturbed:
                         pass_specs.append(
-                            LTX2GuidancePassSpec(
+                            make_ltx2_pass_spec(
                                 name="perturbed",
                                 encoder_hidden_states=encoder_hidden_states,
                                 audio_encoder_hidden_states=audio_encoder_hidden_states,
@@ -2076,7 +2637,7 @@ class LTX2DenoisingStage(DenoisingStage):
                         )
                     if need_modality:
                         pass_specs.append(
-                            LTX2GuidancePassSpec(
+                            make_ltx2_pass_spec(
                                 name="modality",
                                 encoder_hidden_states=encoder_hidden_states,
                                 audio_encoder_hidden_states=audio_encoder_hidden_states,
@@ -2127,6 +2688,14 @@ class LTX2DenoisingStage(DenoisingStage):
                                 for pass_spec in execution_pass_specs
                             ]
                         ),
+                        encoder_hidden_states_projected=all(
+                            pass_spec.encoder_hidden_states_projected
+                            for pass_spec in execution_pass_specs
+                        ),
+                        audio_encoder_hidden_states_projected=all(
+                            pass_spec.audio_encoder_hidden_states_projected
+                            for pass_spec in execution_pass_specs
+                        ),
                     )
                     if use_split_stage1_guided_passes:
                         split_sizes = [1] * expanded_batch_size
@@ -2162,8 +2731,8 @@ class LTX2DenoisingStage(DenoisingStage):
                                     model_kwargs_chunk["perturbation_configs"] = (
                                         split_perturbation_configs[index],
                                     )
-                                video_chunk, audio_chunk = step.current_model(
-                                    **model_kwargs_chunk
+                                video_chunk, audio_chunk = self._call_ltx2_model(
+                                    ctx, step, batch, server_args, model_kwargs_chunk
                                 )
                                 batched_video_chunks.append(video_chunk)
                                 batched_audio_chunks.append(audio_chunk)
@@ -2177,9 +2746,28 @@ class LTX2DenoisingStage(DenoisingStage):
                             )
                         )
                         with self._ltx2_model_forward_context(ctx, step):
-                            batched_video, batched_audio = step.current_model(
-                                **batched_model_kwargs,
-                                perturbation_configs=perturbation_configs,
+                            batched_model_kwargs_with_perturbation = dict(
+                                batched_model_kwargs
+                            )
+                            batched_model_kwargs_with_perturbation[
+                                "perturbation_configs"
+                            ] = perturbation_configs
+                            if (
+                                _ltx2_share_block0_self_attn_enabled()
+                                and ctx.stage == "stage1"
+                                and batch_size_local == 1
+                                and num_execution_passes > 1
+                                and not ctx.replicate_audio_for_sp
+                            ):
+                                batched_model_kwargs_with_perturbation[
+                                    "share_block0_self_attn"
+                                ] = True
+                            batched_video, batched_audio = self._call_ltx2_model(
+                                ctx,
+                                step,
+                                batch,
+                                server_args,
+                                batched_model_kwargs_with_perturbation,
                             )
 
                     batched_video = batched_video.float()

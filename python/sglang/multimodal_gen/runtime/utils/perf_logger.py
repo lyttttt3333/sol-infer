@@ -201,11 +201,18 @@ class StageProfiler:
         self.log_stage_start_end = log_stage_start_end
         self.capture_memory = capture_memory
         self.record_as_step = record_as_step
+        self.record_function_ctx = None
 
     def _should_record_as_step(self) -> bool:
         return self.record_as_step or self.stage_name.startswith("denoising_step_")
 
     def __enter__(self):
+        if os.environ.get("SGLANG_DIFFUSION_RECORD_FUNCTIONS", "0") == "1":
+            self.record_function_ctx = torch.profiler.record_function(
+                f"sgl_stage::{self.stage_name}"
+            )
+            self.record_function_ctx.__enter__()
+
         if self.log_stage_start_end:
             msg = f"[{self.stage_name}] started..."
             if self.logger.isEnabledFor(logging.DEBUG):
@@ -230,46 +237,51 @@ class StageProfiler:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if not ((self.log_timing and self.metrics) or self.log_stage_start_end):
-            return False
+        try:
+            if not ((self.log_timing and self.metrics) or self.log_stage_start_end):
+                return False
 
-        if (
-            os.environ.get("SGLANG_DIFFUSION_SYNC_STAGE_PROFILING", "0") == "1"
-            and self._should_record_as_step()
-            and torch.get_device_module().is_available()
-        ):
-            torch.get_device_module().synchronize()
-        execution_time_s = time.perf_counter() - self.start_time
+            if (
+                os.environ.get("SGLANG_DIFFUSION_SYNC_STAGE_PROFILING", "0") == "1"
+                and self._should_record_as_step()
+                and torch.get_device_module().is_available()
+            ):
+                torch.get_device_module().synchronize()
+            execution_time_s = time.perf_counter() - self.start_time
 
-        if exc_type:
-            self.logger.error(
-                "[%s] Error during execution after %.4f ms: %s",
-                self.stage_name,
-                execution_time_s * 1000,
-                exc_val,
-                exc_info=True,
-            )
-            return False
+            if exc_type:
+                self.logger.error(
+                    "[%s] Error during execution after %.4f ms: %s",
+                    self.stage_name,
+                    execution_time_s * 1000,
+                    exc_val,
+                    exc_info=True,
+                )
+                return False
 
-        if self.log_stage_start_end:
-            self.logger.info(
-                f"[{self.stage_name}] finished in {execution_time_s:.4f} seconds",
-            )
-
-        if self.log_timing and self.metrics:
-            if self._should_record_as_step():
-                self.metrics.record_step(execution_time_s)
-            else:
-                self.metrics.record_stage(self.stage_name, execution_time_s)
-
-            # capture memory snapshot after stage if requested
-            if self.capture_memory and torch.get_device_module().is_available():
-                snapshot = capture_memory_snapshot()
-                self.metrics.record_memory_snapshot(
-                    f"after_{self.stage_name}", snapshot
+            if self.log_stage_start_end:
+                self.logger.info(
+                    f"[{self.stage_name}] finished in {execution_time_s:.4f} seconds",
                 )
 
-        return False
+            if self.log_timing and self.metrics:
+                if self._should_record_as_step():
+                    self.metrics.record_step(execution_time_s)
+                else:
+                    self.metrics.record_stage(self.stage_name, execution_time_s)
+
+                # capture memory snapshot after stage if requested
+                if self.capture_memory and torch.get_device_module().is_available():
+                    snapshot = capture_memory_snapshot()
+                    self.metrics.record_memory_snapshot(
+                        f"after_{self.stage_name}", snapshot
+                    )
+
+            return False
+        finally:
+            if self.record_function_ctx is not None:
+                self.record_function_ctx.__exit__(exc_type, exc_val, exc_tb)
+                self.record_function_ctx = None
 
 
 class PerformanceLogger:

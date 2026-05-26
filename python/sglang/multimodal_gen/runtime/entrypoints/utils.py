@@ -557,10 +557,17 @@ def post_process_sample(
     # 1. Convert tensor / array to list of uint8 HWC frames
     frames = None
     if isinstance(sample, torch.Tensor):
-        if sample.dim() == 3:
-            sample = sample.unsqueeze(1)
-        sample = (sample * 255).clamp(0, 255).to(torch.uint8)
-        videos = sample.permute(1, 2, 3, 0).cpu().numpy()
+        if sample.dim() == 4 and sample.shape[-1] in (1, 3, 4):
+            videos = sample
+            if videos.dtype != torch.uint8:
+                videos = (videos * 255).clamp(0, 255).to(torch.uint8)
+            videos = videos.cpu().numpy()
+        else:
+            if sample.dim() == 3:
+                sample = sample.unsqueeze(1)
+            if sample.dtype != torch.uint8:
+                sample = (sample * 255).clamp(0, 255).to(torch.uint8)
+            videos = sample.permute(1, 2, 3, 0).cpu().numpy()
         frames = list(videos)
     else:
         if not isinstance(sample, np.ndarray):

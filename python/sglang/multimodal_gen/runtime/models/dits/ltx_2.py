@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+import atexit
+import json
+import os
+from contextlib import nullcontext
 from typing import Any, Optional, Tuple, Union
 
 import torch
@@ -39,6 +43,166 @@ from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
+
+
+_LTX2_PROFILE_CONTEXT: list[tuple[str, object]] = []
+_LTX2_PROFILE_EVENTS: list[tuple[str, torch.cuda.Event, torch.cuda.Event]] = []
+_LTX2_PROFILE_DUMP_REGISTERED = False
+_LTX2_PERTURBATION_MASK_CACHE: dict[tuple[object, ...], torch.Tensor] = {}
+_LTX2_FUSED_ADALN_KERNELS: tuple[object, object] | None = None
+_LTX2_FUSED_ADALN_IMPORT_FAILED = False
+_LTX2_FUSED_ADALN_RUNTIME_DISABLED = False
+_LTX2_FUSED_ADALN_WARNING_EMITTED = False
+_LTX2_FUSED_MODULATE_RUNTIME_DISABLED = False
+_LTX2_FUSED_MODULATE_WARNING_EMITTED = False
+_LTX2_FUSED_QKNORM_RUNTIME_DISABLED = False
+_LTX2_FUSED_QKNORM_WARNING_EMITTED = False
+_LTX2_FUSED_QKNORM_ROPE_RUNTIME_DISABLED = False
+_LTX2_FUSED_QKNORM_ROPE_WARNING_EMITTED = False
+_LTX2_FUSED_DUAL_MODULATE_RUNTIME_DISABLED = False
+_LTX2_FUSED_DUAL_MODULATE_WARNING_EMITTED = False
+_LTX2_FUSED_CA_DUAL_MODULATE_RUNTIME_DISABLED = False
+_LTX2_FUSED_CA_DUAL_MODULATE_WARNING_EMITTED = False
+_LTX2_FUSED_ADA_VALUES_RUNTIME_DISABLED = False
+_LTX2_FUSED_ADA_VALUES_WARNING_EMITTED = False
+_LTX2_FUSED_ADA_VALUES_ALL_RUNTIME_DISABLED = False
+_LTX2_FUSED_ADA_VALUES_ALL_WARNING_EMITTED = False
+_LTX2_FUSED_ADA_DIRECT_RUNTIME_DISABLED = False
+_LTX2_FUSED_ADA_DIRECT_WARNING_EMITTED = False
+_LTX2_FUSED_Q_GATE_RUNTIME_DISABLED = False
+_LTX2_FUSED_Q_GATE_WARNING_EMITTED = False
+_LTX2_COMPILED_GATE_TO_OUT = None
+_LTX2_COMPILED_GATE_TO_OUT_RUNTIME_DISABLED = False
+_LTX2_COMPILED_GATE_TO_OUT_WARNING_EMITTED = False
+
+
+def _ltx2_record_functions_enabled() -> bool:
+    return os.environ.get("SGLANG_DIFFUSION_RECORD_FUNCTIONS", "0") == "1"
+
+
+def _ltx2_event_profile_enabled() -> bool:
+    return os.environ.get("SGLANG_DIFFUSION_LTX2_EVENT_PROFILE", "0") == "1"
+
+
+def _ltx2_scoped_profile_name(name: str) -> str:
+    if not _LTX2_PROFILE_CONTEXT:
+        return name
+    phase, step_index = _LTX2_PROFILE_CONTEXT[-1]
+    return f"ltx2_phase::{phase}::step_{step_index}::{name}"
+
+
+def _ltx2_push_profile_context(phase: object, step_index: object) -> int:
+    _LTX2_PROFILE_CONTEXT.append((str(phase), step_index))
+    return len(_LTX2_PROFILE_CONTEXT)
+
+
+def _ltx2_pop_profile_context(token: int) -> None:
+    del _LTX2_PROFILE_CONTEXT[token - 1 :]
+
+
+def _ltx2_register_event_dump() -> None:
+    global _LTX2_PROFILE_DUMP_REGISTERED
+    if _LTX2_PROFILE_DUMP_REGISTERED:
+        return
+    atexit.register(_ltx2_dump_event_profile)
+    _LTX2_PROFILE_DUMP_REGISTERED = True
+
+
+def _ltx2_dump_event_profile() -> None:
+    if not _LTX2_PROFILE_EVENTS:
+        return
+    output_path = os.environ.get("SGLANG_DIFFUSION_LTX2_PROFILE_PATH")
+    if not output_path:
+        output_path = f"ltx2_event_profile_{os.getpid()}.json"
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        stats: dict[str, dict[str, float | int]] = {}
+        for name, start_event, end_event in _LTX2_PROFILE_EVENTS:
+            duration_ms = float(start_event.elapsed_time(end_event))
+            item = stats.setdefault(
+                name,
+                {
+                    "count": 0,
+                    "total_ms": 0.0,
+                    "min_ms": duration_ms,
+                    "max_ms": duration_ms,
+                },
+            )
+            item["count"] = int(item["count"]) + 1
+            item["total_ms"] = float(item["total_ms"]) + duration_ms
+            item["min_ms"] = min(float(item["min_ms"]), duration_ms)
+            item["max_ms"] = max(float(item["max_ms"]), duration_ms)
+        rows = []
+        for name, item in stats.items():
+            count = int(item["count"])
+            total_ms = float(item["total_ms"])
+            rows.append(
+                {
+                    "name": name,
+                    "count": count,
+                    "total_ms": total_ms,
+                    "avg_ms": total_ms / count if count else 0.0,
+                    "min_ms": float(item["min_ms"]),
+                    "max_ms": float(item["max_ms"]),
+                }
+            )
+        rows.sort(key=lambda item: item["total_ms"], reverse=True)
+        abs_output_path = os.path.abspath(output_path)
+        os.makedirs(os.path.dirname(abs_output_path), exist_ok=True)
+        tmp_output_path = f"{abs_output_path}.tmp.{os.getpid()}"
+        with open(tmp_output_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "event_count": len(_LTX2_PROFILE_EVENTS),
+                    "stats": rows,
+                },
+                f,
+                indent=2,
+            )
+        os.replace(tmp_output_path, abs_output_path)
+        logger.info("Saved LTX2 event profile to: %s", abs_output_path)
+    except Exception as exc:
+        logger.warning("Failed to dump LTX2 event profile: %s", exc)
+
+
+class _LTX2ProfileScope:
+    def __init__(self, name: str):
+        self.name = _ltx2_scoped_profile_name(name)
+        self.record_ctx = None
+        self.start_event = None
+        self.end_event = None
+
+    def __enter__(self):
+        if _ltx2_record_functions_enabled():
+            self.record_ctx = torch.profiler.record_function(self.name)
+            self.record_ctx.__enter__()
+        if _ltx2_event_profile_enabled() and torch.cuda.is_available():
+            _ltx2_register_event_dump()
+            self.start_event = torch.cuda.Event(enable_timing=True)
+            self.end_event = torch.cuda.Event(enable_timing=True)
+            self.start_event.record()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if self.start_event is not None and self.end_event is not None:
+                self.end_event.record()
+                _LTX2_PROFILE_EVENTS.append(
+                    (self.name, self.start_event, self.end_event)
+                )
+        finally:
+            if self.record_ctx is not None:
+                self.record_ctx.__exit__(exc_type, exc_val, exc_tb)
+                self.record_ctx = None
+        return False
+
+
+def _ltx2_record_function(name: str):
+    if _ltx2_record_functions_enabled() or _ltx2_event_profile_enabled():
+        return _LTX2ProfileScope(name)
+    return nullcontext()
+
 
 ADALN_NUM_BASE_PARAMS = 6
 ADALN_NUM_CROSS_ATTN_PARAMS = 3
@@ -89,9 +253,19 @@ def _ltx2_build_batched_perturbation_states(
             cache_key = tuple(keep_values)
             mask = mask_cache.get(cache_key)
             if mask is None:
-                mask = torch.tensor(
-                    keep_values, device=values.device, dtype=values.dtype
-                ).view(len(keep_values), *([1] * (values.ndim - 1)))
+                global_cache_key = (
+                    cache_key,
+                    values.device.type,
+                    values.device.index,
+                    values.dtype,
+                    values.ndim,
+                )
+                mask = _LTX2_PERTURBATION_MASK_CACHE.get(global_cache_key)
+                if mask is None:
+                    mask = torch.tensor(
+                        keep_values, device=values.device, dtype=values.dtype
+                    ).view(len(keep_values), *([1] * (values.ndim - 1)))
+                    _LTX2_PERTURBATION_MASK_CACHE[global_cache_key] = mask
                 mask_cache[cache_key] = mask
             states[block_idx] = (mask, False)
     return states
@@ -397,6 +571,1052 @@ def rms_norm(x: torch.Tensor, eps: float) -> torch.Tensor:
     return F.rms_norm(x, normalized_shape=(x.shape[-1],), eps=eps)
 
 
+def _ltx2_fused_adaln_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_ADALN", "0") == "1"
+
+
+def _ltx2_fused_modulate_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_MODULATE", "0") == "1"
+
+
+def _ltx2_fused_residual_gate_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_RESIDUAL_GATE", "0") == "1"
+
+
+def _ltx2_fused_qknorm_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_QKNORM", "0") == "1"
+
+
+def _ltx2_fused_qknorm_rope_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_QKNORM_ROPE", "0") == "1"
+
+
+def _ltx2_cache_rope_emb_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_CACHE_ROPE_EMB", "0") == "1"
+
+
+def _ltx2_fused_dual_modulate_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_DUAL_MODULATE", "0") == "1"
+
+
+def _ltx2_fused_ca_dual_modulate_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_CA_DUAL_MODULATE", "0") == "1"
+
+
+def _ltx2_fused_ada_values_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_ADA_VALUES", "0") == "1"
+
+
+def _ltx2_fused_ada_values_all_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_ADA_VALUES_ALL", "0") == "1"
+
+
+def _ltx2_fused_ada_direct_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_ADA_DIRECT", "0") == "1"
+
+
+def _ltx2_fused_q_gate_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_Q_GATE", "0") == "1"
+
+
+def _ltx2_fused_qkv_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_QKV", "0") == "1"
+
+
+def _ltx2_fused_audio_qkvg_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_AUDIO_QKVG", "0") == "1"
+
+
+def _ltx2_fused_kv_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_KV", "0") == "1"
+
+
+def _ltx2_fused_ffn_proj_in_gelu_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_FFN_PROJ_IN_GELU", "0") == "1"
+
+
+def _ltx2_compile_gate_to_out_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_COMPILE_GATE_TO_OUT", "0") == "1"
+
+
+def _ltx2_compile_a2v_gate_to_out_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_COMPILE_A2V_GATE_TO_OUT", "0") == "1"
+
+
+def _ltx2_share_guidance_prefix_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_SHARE_GUIDANCE_PREFIX", "0") == "1"
+
+
+def _ltx2_linear_base_for_fusion(layer: nn.Module) -> nn.Module | None:
+    base_layer = getattr(layer, "base_layer", layer)
+    if base_layer is not layer and not (
+        getattr(layer, "merged", False) or getattr(layer, "disable_lora", False)
+    ):
+        return None
+    return base_layer
+
+
+_LTX2_GUIDANCE_PERTURBATION_KEYS = (
+    "skip_video_self_attn_blocks",
+    "skip_audio_self_attn_blocks",
+    "skip_a2v_cross_attn",
+    "skip_v2a_cross_attn",
+)
+
+
+def _ltx2_guidance_prefix_share_plan(
+    perturbation_configs: tuple[dict[str, object], ...] | None,
+    block_indices: tuple[int, ...],
+    batch_size: int,
+) -> tuple[int, tuple[int, ...], tuple[int, ...]] | None:
+    if (
+        not _ltx2_share_guidance_prefix_enabled()
+        or perturbation_configs is None
+        or get_tp_world_size() != 1
+        or int(batch_size) != len(perturbation_configs)
+        or int(batch_size) not in (3, 4)
+    ):
+        return None
+
+    cond_idx = 0
+    perturbed_idx = 2
+    cond_config = perturbation_configs[cond_idx]
+    perturbed_config = perturbation_configs[perturbed_idx]
+
+    for block_idx in block_indices:
+        if any(
+            _ltx2_is_perturbed(cond_config, key, block_idx)
+            for key in _LTX2_GUIDANCE_PERTURBATION_KEYS
+        ):
+            return None
+
+    if (
+        _ltx2_is_perturbed(perturbed_config, "skip_a2v_cross_attn", -1)
+        or _ltx2_is_perturbed(perturbed_config, "skip_v2a_cross_attn", -1)
+    ):
+        return None
+
+    skip_blocks = sorted(
+        set(int(v) for v in (perturbed_config.get("skip_video_self_attn_blocks") or ()))
+        | set(int(v) for v in (perturbed_config.get("skip_audio_self_attn_blocks") or ()))
+    )
+    if not skip_blocks:
+        return None
+    first_skip_block = int(skip_blocks[0])
+    if first_skip_block not in block_indices:
+        return None
+    if first_skip_block <= min(block_indices):
+        return None
+
+    for block_idx in block_indices:
+        if block_idx >= first_skip_block:
+            break
+        if any(
+            _ltx2_is_perturbed(perturbed_config, key, block_idx)
+            for key in _LTX2_GUIDANCE_PERTURBATION_KEYS
+        ):
+            return None
+
+    keep_indices = tuple(i for i in range(int(batch_size)) if i != perturbed_idx)
+    expand_indices = tuple(
+        cond_idx if i == perturbed_idx else i if i < perturbed_idx else i - 1
+        for i in range(int(batch_size))
+    )
+    return first_skip_block, keep_indices, expand_indices
+
+
+def _ltx2_index_batch_dim(
+    tensor: torch.Tensor | None,
+    indices: tuple[int, ...],
+    full_batch_size: int,
+) -> torch.Tensor | None:
+    if tensor is None or not torch.is_tensor(tensor):
+        return tensor
+    if tensor.ndim == 0 or int(tensor.shape[0]) != int(full_batch_size):
+        return tensor
+    index = torch.tensor(indices, device=tensor.device, dtype=torch.long)
+    return tensor.index_select(0, index)
+
+
+def _ltx2_index_rotary_emb(
+    pe: tuple[torch.Tensor, torch.Tensor] | None,
+    indices: tuple[int, ...],
+    full_batch_size: int,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if pe is None:
+        return None
+    return (
+        _ltx2_index_batch_dim(pe[0], indices, full_batch_size),
+        _ltx2_index_batch_dim(pe[1], indices, full_batch_size),
+    )
+
+
+def _ltx2_build_perturbation_state_maps(
+    perturbation_configs: tuple[dict[str, object], ...] | None,
+    block_indices: tuple[int, ...],
+    hidden_states: torch.Tensor,
+    audio_hidden_states: torch.Tensor,
+) -> tuple[
+    dict[int, tuple[torch.Tensor | None, bool]] | None,
+    dict[int, tuple[torch.Tensor | None, bool]] | None,
+    dict[int, tuple[torch.Tensor | None, bool]] | None,
+    dict[int, tuple[torch.Tensor | None, bool]] | None,
+]:
+    if perturbation_configs is None:
+        return None, None, None, None
+    return (
+        _ltx2_build_batched_perturbation_states(
+            perturbation_configs,
+            "skip_video_self_attn_blocks",
+            block_indices,
+            hidden_states,
+        ),
+        _ltx2_build_batched_perturbation_states(
+            perturbation_configs,
+            "skip_audio_self_attn_blocks",
+            block_indices,
+            audio_hidden_states,
+        ),
+        _ltx2_build_batched_perturbation_states(
+            perturbation_configs,
+            "skip_a2v_cross_attn",
+            block_indices,
+            hidden_states,
+        ),
+        _ltx2_build_batched_perturbation_states(
+            perturbation_configs,
+            "skip_v2a_cross_attn",
+            block_indices,
+            audio_hidden_states,
+        ),
+    )
+
+
+def _ltx2_get_fused_adaln_kernels() -> tuple[object, object] | None:
+    global _LTX2_FUSED_ADALN_KERNELS, _LTX2_FUSED_ADALN_IMPORT_FAILED
+    if _LTX2_FUSED_ADALN_KERNELS is not None:
+        return _LTX2_FUSED_ADALN_KERNELS
+    if _LTX2_FUSED_ADALN_IMPORT_FAILED:
+        return None
+    try:
+        from sglang.jit_kernel.diffusion.cutedsl.scale_residual_norm_scale_shift import (
+            fused_norm_scale_shift,
+            fused_scale_residual_norm_scale_shift,
+        )
+
+        _LTX2_FUSED_ADALN_KERNELS = (
+            fused_norm_scale_shift,
+            fused_scale_residual_norm_scale_shift,
+        )
+        return _LTX2_FUSED_ADALN_KERNELS
+    except Exception as exc:
+        _LTX2_FUSED_ADALN_IMPORT_FAILED = True
+        logger.warning("LTX2 fused AdaLN kernels are unavailable: %s", exc)
+        return None
+
+
+def _ltx2_disable_fused_adaln(exc: Exception) -> None:
+    global _LTX2_FUSED_ADALN_RUNTIME_DISABLED, _LTX2_FUSED_ADALN_WARNING_EMITTED
+    _LTX2_FUSED_ADALN_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_ADALN_WARNING_EMITTED:
+        logger.warning("Disabling LTX2 fused AdaLN fast path after failure: %s", exc)
+        _LTX2_FUSED_ADALN_WARNING_EMITTED = True
+
+
+def _ltx2_disable_fused_modulate(exc: Exception) -> None:
+    global _LTX2_FUSED_MODULATE_RUNTIME_DISABLED
+    global _LTX2_FUSED_MODULATE_WARNING_EMITTED
+    _LTX2_FUSED_MODULATE_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_MODULATE_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 fused modulation fast path after failure: %s", exc
+        )
+        _LTX2_FUSED_MODULATE_WARNING_EMITTED = True
+
+
+def _ltx2_disable_fused_qknorm(exc: Exception) -> None:
+    global _LTX2_FUSED_QKNORM_RUNTIME_DISABLED
+    global _LTX2_FUSED_QKNORM_WARNING_EMITTED
+    _LTX2_FUSED_QKNORM_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_QKNORM_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 fused q/k norm fast path after failure: %s", exc
+        )
+        _LTX2_FUSED_QKNORM_WARNING_EMITTED = True
+
+
+def _ltx2_disable_fused_qknorm_rope(exc: Exception) -> None:
+    global _LTX2_FUSED_QKNORM_ROPE_RUNTIME_DISABLED
+    global _LTX2_FUSED_QKNORM_ROPE_WARNING_EMITTED
+    _LTX2_FUSED_QKNORM_ROPE_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_QKNORM_ROPE_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 fused q/k norm + RoPE fast path after failure: %s",
+            exc,
+        )
+        _LTX2_FUSED_QKNORM_ROPE_WARNING_EMITTED = True
+
+
+def _ltx2_disable_fused_dual_modulate(exc: Exception) -> None:
+    global _LTX2_FUSED_DUAL_MODULATE_RUNTIME_DISABLED
+    global _LTX2_FUSED_DUAL_MODULATE_WARNING_EMITTED
+    _LTX2_FUSED_DUAL_MODULATE_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_DUAL_MODULATE_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 fused dual-modulate fast path after failure: %s", exc
+        )
+        _LTX2_FUSED_DUAL_MODULATE_WARNING_EMITTED = True
+
+
+def _ltx2_disable_fused_ca_dual_modulate(exc: Exception) -> None:
+    global _LTX2_FUSED_CA_DUAL_MODULATE_RUNTIME_DISABLED
+    global _LTX2_FUSED_CA_DUAL_MODULATE_WARNING_EMITTED
+    _LTX2_FUSED_CA_DUAL_MODULATE_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_CA_DUAL_MODULATE_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 fused CA dual-modulate fast path after failure: %s",
+            exc,
+        )
+        _LTX2_FUSED_CA_DUAL_MODULATE_WARNING_EMITTED = True
+
+
+def _ltx2_disable_fused_ada_values(exc: Exception) -> None:
+    global _LTX2_FUSED_ADA_VALUES_RUNTIME_DISABLED
+    global _LTX2_FUSED_ADA_VALUES_WARNING_EMITTED
+    _LTX2_FUSED_ADA_VALUES_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_ADA_VALUES_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 fused Ada values fast path after failure: %s", exc
+        )
+        _LTX2_FUSED_ADA_VALUES_WARNING_EMITTED = True
+
+
+def _ltx2_disable_fused_ada_values_all(exc: Exception) -> None:
+    global _LTX2_FUSED_ADA_VALUES_ALL_RUNTIME_DISABLED
+    global _LTX2_FUSED_ADA_VALUES_ALL_WARNING_EMITTED
+    _LTX2_FUSED_ADA_VALUES_ALL_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_ADA_VALUES_ALL_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 fused all-Ada-values fast path after failure: %s",
+            exc,
+        )
+        _LTX2_FUSED_ADA_VALUES_ALL_WARNING_EMITTED = True
+
+
+def _ltx2_disable_fused_q_gate(exc: Exception) -> None:
+    global _LTX2_FUSED_Q_GATE_RUNTIME_DISABLED
+    global _LTX2_FUSED_Q_GATE_WARNING_EMITTED
+    _LTX2_FUSED_Q_GATE_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_Q_GATE_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 fused q+gate projection fast path after failure: %s",
+            exc,
+        )
+        _LTX2_FUSED_Q_GATE_WARNING_EMITTED = True
+
+
+def _ltx2_disable_compiled_gate_to_out(exc: Exception) -> None:
+    global _LTX2_COMPILED_GATE_TO_OUT_RUNTIME_DISABLED
+    global _LTX2_COMPILED_GATE_TO_OUT_WARNING_EMITTED
+    _LTX2_COMPILED_GATE_TO_OUT_RUNTIME_DISABLED = True
+    if not _LTX2_COMPILED_GATE_TO_OUT_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 compiled gate-to-out fast path after failure: %s",
+            exc,
+        )
+        _LTX2_COMPILED_GATE_TO_OUT_WARNING_EMITTED = True
+
+
+def _ltx2_gate_to_out_impl(
+    out: torch.Tensor,
+    gate_logits: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    scaled = out * (2.0 * torch.sigmoid(gate_logits).unsqueeze(-1))
+    return F.linear(scaled.reshape(*scaled.shape[:-2], -1), weight, bias)
+
+
+def _ltx2_get_compiled_gate_to_out():
+    global _LTX2_COMPILED_GATE_TO_OUT
+    if _LTX2_COMPILED_GATE_TO_OUT is None:
+        _LTX2_COMPILED_GATE_TO_OUT = torch.compile(
+            _ltx2_gate_to_out_impl,
+            mode="max-autotune-no-cudagraphs",
+            dynamic=False,
+            fullgraph=True,
+        )
+    return _LTX2_COMPILED_GATE_TO_OUT
+
+
+def _ltx2_try_fused_qknorm(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    q_norm: nn.Module,
+    k_norm: nn.Module,
+    eps: float,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if (
+        not _ltx2_fused_qknorm_enabled()
+        or _LTX2_FUSED_QKNORM_RUNTIME_DISABLED
+        or get_tp_world_size() != 1
+        or not isinstance(q_norm, torch.nn.RMSNorm)
+        or not isinstance(k_norm, torch.nn.RMSNorm)
+        or not q.is_cuda
+        or not k.is_cuda
+        or q.dtype not in (torch.float16, torch.bfloat16)
+        or k.dtype != q.dtype
+        or q.ndim != 3
+        or k.ndim != 3
+        or q.shape[-1] != k.shape[-1]
+        or not q.is_contiguous()
+        or not k.is_contiguous()
+    ):
+        return None
+
+    q_weight = q_norm.weight
+    k_weight = k_norm.weight
+    hidden = int(q.shape[-1])
+    if (
+        q_weight is None
+        or k_weight is None
+        or q_weight.device != q.device
+        or k_weight.device != k.device
+        or q_weight.dtype != q.dtype
+        or k_weight.dtype != k.dtype
+        or q_weight.numel() != hidden
+        or k_weight.numel() != hidden
+    ):
+        return None
+
+    try:
+        from sglang.jit_kernel.diffusion.triton.ltx2_qknorm import (
+            ltx2_qknorm_pair_inplace,
+        )
+
+        with _ltx2_record_function("ltx2_fused_qknorm::pair_inplace"):
+            q_view = q.view(-1, hidden)
+            k_view = k.view(-1, hidden)
+            ltx2_qknorm_pair_inplace(q_view, k_view, q_weight, k_weight, eps)
+        return q, k
+    except Exception as exc:
+        _ltx2_disable_fused_qknorm(exc)
+        return None
+
+
+def _ltx2_try_fused_qknorm_split_rope(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    q_norm: nn.Module,
+    k_norm: nn.Module,
+    eps: float,
+    pe: tuple[torch.Tensor, torch.Tensor],
+    k_pe: tuple[torch.Tensor, torch.Tensor] | None,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if (
+        not _ltx2_fused_qknorm_rope_enabled()
+        or _LTX2_FUSED_QKNORM_ROPE_RUNTIME_DISABLED
+        or get_tp_world_size() != 1
+        or not isinstance(q_norm, torch.nn.RMSNorm)
+        or not isinstance(k_norm, torch.nn.RMSNorm)
+        or not q.is_cuda
+        or not k.is_cuda
+        or q.dtype != torch.bfloat16
+        or k.dtype != torch.bfloat16
+        or q.ndim != 3
+        or k.ndim != 3
+        or q.shape[-1] != k.shape[-1]
+        or not q.is_contiguous()
+        or not k.is_contiguous()
+    ):
+        return None
+
+    q_cos, q_sin = pe
+    k_cos, k_sin = pe if k_pe is None else k_pe
+    if (
+        q_cos.ndim != 4
+        or q_sin.shape != q_cos.shape
+        or k_cos.ndim != 4
+        or k_sin.shape != k_cos.shape
+        or q_cos.dtype != torch.bfloat16
+        or q_sin.dtype != torch.bfloat16
+        or k_cos.dtype != torch.bfloat16
+        or k_sin.dtype != torch.bfloat16
+        or not q_cos.is_cuda
+        or not q_sin.is_cuda
+        or not k_cos.is_cuda
+        or not k_sin.is_cuda
+    ):
+        return None
+
+    q_weight = q_norm.weight
+    k_weight = k_norm.weight
+    hidden = int(q.shape[-1])
+    if (
+        q_weight is None
+        or k_weight is None
+        or q_weight.device != q.device
+        or k_weight.device != k.device
+        or q_weight.dtype != q.dtype
+        or k_weight.dtype != k.dtype
+        or q_weight.numel() != hidden
+        or k_weight.numel() != hidden
+    ):
+        return None
+
+    try:
+        from sglang.jit_kernel.diffusion.triton.ltx2_qknorm import (
+            ltx2_qknorm_split_rope_pair,
+        )
+
+        with _ltx2_record_function("ltx2_fused_qknorm_rope::split_pair"):
+            return ltx2_qknorm_split_rope_pair(
+                q,
+                k,
+                q_weight,
+                k_weight,
+                q_cos,
+                q_sin,
+                k_cos,
+                k_sin,
+                eps,
+            )
+    except Exception as exc:
+        _ltx2_disable_fused_qknorm_rope(exc)
+        return None
+
+
+def _ltx2_try_fused_rmsnorm_dual_modulate(
+    x: torch.Tensor,
+    scale0: torch.Tensor,
+    shift0: torch.Tensor,
+    scale1: torch.Tensor,
+    shift1: torch.Tensor,
+    eps: float,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if (
+        not _ltx2_fused_dual_modulate_enabled()
+        or _LTX2_FUSED_DUAL_MODULATE_RUNTIME_DISABLED
+        or get_tp_world_size() != 1
+        or not x.is_cuda
+        or x.ndim != 3
+        or not x.is_contiguous()
+        or x.dtype != torch.bfloat16
+    ):
+        return None
+    hidden = int(x.shape[-1])
+    if hidden % 256 != 0 or hidden > 8192:
+        return None
+    for tensor in (scale0, shift0, scale1, shift1):
+        if (
+            not tensor.is_cuda
+            or tensor.dtype != x.dtype
+            or tensor.shape[-1] != hidden
+            or tensor.stride(-1) != 1
+        ):
+            return None
+    try:
+        from sglang.jit_kernel.diffusion.triton.ltx2_dual_modulate import (
+            ltx2_rmsnorm_dual_modulate,
+        )
+
+        with _ltx2_record_function(
+            "ltx2_fused_dual_modulate::rmsnorm_scale_shift_x2"
+        ):
+            return ltx2_rmsnorm_dual_modulate(
+                x, scale0, shift0, scale1, shift1, eps
+            )
+    except Exception as exc:
+        _ltx2_disable_fused_dual_modulate(exc)
+        return None
+
+
+def _ltx2_try_fused_rmsnorm_ca_dual_modulate(
+    x: torch.Tensor,
+    temb_scale_shift: torch.Tensor,
+    scale_shift_table: torch.Tensor,
+    eps: float,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if (
+        not _ltx2_fused_ca_dual_modulate_enabled()
+        or _LTX2_FUSED_CA_DUAL_MODULATE_RUNTIME_DISABLED
+        or get_tp_world_size() != 1
+        or not x.is_cuda
+        or x.ndim != 3
+        or not x.is_contiguous()
+        or x.dtype != torch.bfloat16
+    ):
+        return None
+    batch, seq, hidden = x.shape
+    if hidden % 256 != 0 or hidden > 8192:
+        return None
+    if (
+        not temb_scale_shift.is_cuda
+        or temb_scale_shift.dtype != x.dtype
+        or temb_scale_shift.ndim != 3
+        or temb_scale_shift.shape[0] != batch
+        or temb_scale_shift.shape[1] != seq
+        or temb_scale_shift.shape[2] != 4 * hidden
+        or temb_scale_shift.stride(-1) != 1
+    ):
+        return None
+    if (
+        not scale_shift_table.is_cuda
+        or scale_shift_table.dtype not in (torch.bfloat16, torch.float32)
+        or scale_shift_table.ndim != 2
+        or scale_shift_table.shape[0] < 4
+        or scale_shift_table.shape[1] != hidden
+        or scale_shift_table.stride(-1) != 1
+    ):
+        return None
+    try:
+        from sglang.jit_kernel.diffusion.triton.ltx2_dual_modulate import (
+            ltx2_rmsnorm_ca_dual_modulate_from_temb,
+        )
+
+        with _ltx2_record_function(
+            "ltx2_fused_ca_dual_modulate::rmsnorm_table_scale_shift_x2"
+        ):
+            return ltx2_rmsnorm_ca_dual_modulate_from_temb(
+                x, temb_scale_shift, scale_shift_table, eps
+            )
+    except Exception as exc:
+        _ltx2_disable_fused_ca_dual_modulate(exc)
+        return None
+
+
+def _ltx2_try_fused_ada_values3(
+    scale_shift_table: torch.Tensor,
+    batch_size: int,
+    timestep: torch.Tensor,
+    indices: slice,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    if (
+        not _ltx2_fused_ada_values_enabled()
+        or _LTX2_FUSED_ADA_VALUES_RUNTIME_DISABLED
+        or get_tp_world_size() != 1
+        or not isinstance(indices, slice)
+        or indices.step not in (None, 1)
+        or indices.start is None
+        or indices.stop is None
+        or int(indices.stop) - int(indices.start) != 3
+        or not timestep.is_cuda
+        or timestep.dtype != torch.bfloat16
+        or timestep.ndim != 3
+        or int(timestep.shape[0]) != int(batch_size)
+        or not timestep.is_contiguous()
+        or not scale_shift_table.is_cuda
+        or scale_shift_table.dtype not in (torch.bfloat16, torch.float32)
+        or scale_shift_table.ndim != 2
+        or scale_shift_table.stride(-1) != 1
+    ):
+        return None
+    hidden = int(scale_shift_table.shape[1])
+    num_ada_params = int(scale_shift_table.shape[0])
+    if (
+        hidden % 256 != 0
+        or hidden > 8192
+        or timestep.shape[-1] != num_ada_params * hidden
+        or int(indices.start) < 0
+        or int(indices.stop) > num_ada_params
+    ):
+        return None
+    try:
+        from sglang.jit_kernel.diffusion.triton.ltx2_ada_values import (
+            ltx2_ada_values3,
+        )
+
+        with _ltx2_record_function("ltx2_fused_ada_values::triple"):
+            return ltx2_ada_values3(scale_shift_table, timestep, int(indices.start))
+    except Exception as exc:
+        _ltx2_disable_fused_ada_values(exc)
+        return None
+
+
+def _ltx2_try_fused_ada_values9(
+    scale_shift_table: torch.Tensor,
+    batch_size: int,
+    timestep: torch.Tensor,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+] | None:
+    if (
+        not _ltx2_fused_ada_values_all_enabled()
+        or _LTX2_FUSED_ADA_VALUES_ALL_RUNTIME_DISABLED
+        or get_tp_world_size() != 1
+        or not timestep.is_cuda
+        or timestep.dtype != torch.bfloat16
+        or timestep.ndim != 3
+        or int(timestep.shape[0]) != int(batch_size)
+        or not timestep.is_contiguous()
+        or not scale_shift_table.is_cuda
+        or scale_shift_table.dtype not in (torch.bfloat16, torch.float32)
+        or scale_shift_table.ndim != 2
+        or int(scale_shift_table.shape[0]) != 9
+        or scale_shift_table.stride(-1) != 1
+    ):
+        return None
+    hidden = int(scale_shift_table.shape[1])
+    if (
+        hidden % 256 != 0
+        or hidden > 8192
+        or timestep.shape[-1] != 9 * hidden
+    ):
+        return None
+    try:
+        from sglang.jit_kernel.diffusion.triton.ltx2_ada_values import (
+            ltx2_ada_values9,
+        )
+
+        with _ltx2_record_function("ltx2_fused_ada_values::all9"):
+            return ltx2_ada_values9(scale_shift_table, timestep)
+    except Exception as exc:
+        _ltx2_disable_fused_ada_values_all(exc)
+        return None
+
+
+
+
+def _ltx2_try_fused_ada_gates3(
+    scale_shift_table: torch.Tensor,
+    batch_size: int,
+    timestep: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    if (
+        not _ltx2_fused_ada_direct_enabled()
+        or _LTX2_FUSED_ADA_DIRECT_RUNTIME_DISABLED
+        or get_tp_world_size() != 1
+        or not timestep.is_cuda
+        or timestep.dtype != torch.bfloat16
+        or timestep.ndim != 3
+        or int(timestep.shape[0]) != int(batch_size)
+        or not timestep.is_contiguous()
+        or not scale_shift_table.is_cuda
+        or scale_shift_table.dtype not in (torch.bfloat16, torch.float32)
+        or scale_shift_table.ndim != 2
+        or int(scale_shift_table.shape[0]) != 9
+        or scale_shift_table.stride(-1) != 1
+    ):
+        return None
+    hidden = int(scale_shift_table.shape[1])
+    if hidden % 256 != 0 or hidden > 8192 or timestep.shape[-1] != 9 * hidden:
+        return None
+    try:
+        from sglang.jit_kernel.diffusion.triton.ltx2_ada_values import (
+            ltx2_ada_values_indices3,
+        )
+
+        with _ltx2_record_function("ltx2_fused_ada_direct::gates3"):
+            return ltx2_ada_values_indices3(scale_shift_table, timestep, 2, 5, 8)
+    except Exception as exc:
+        _ltx2_disable_fused_ada_direct(exc)
+        return None
+
+
+def _ltx2_try_fused_norm_ada_scale_shift(
+    x: torch.Tensor,
+    scale_shift_table: torch.Tensor,
+    timestep: torch.Tensor,
+    shift_index: int,
+    scale_index: int,
+    eps: float,
+) -> torch.Tensor | None:
+    if (
+        not _ltx2_fused_ada_direct_enabled()
+        or _LTX2_FUSED_ADA_DIRECT_RUNTIME_DISABLED
+        or get_tp_world_size() != 1
+        or not x.is_cuda
+        or not timestep.is_cuda
+        or x.dtype != torch.bfloat16
+        or timestep.dtype != x.dtype
+        or x.ndim != 3
+        or timestep.ndim != 3
+        or int(timestep.shape[0]) != int(x.shape[0])
+        or int(timestep.shape[1]) != int(x.shape[1])
+        or x.stride(-1) != 1
+        or not timestep.is_contiguous()
+        or not scale_shift_table.is_cuda
+        or scale_shift_table.dtype not in (torch.bfloat16, torch.float32)
+        or scale_shift_table.ndim != 2
+        or int(scale_shift_table.shape[0]) != 9
+        or int(scale_shift_table.shape[1]) != int(x.shape[-1])
+        or scale_shift_table.stride(-1) != 1
+    ):
+        return None
+    hidden = int(x.shape[-1])
+    if hidden % 256 != 0 or hidden > 8192 or timestep.shape[-1] != 9 * hidden:
+        return None
+    try:
+        from sglang.jit_kernel.diffusion.cutedsl.ada_norm_scale_shift import (
+            fused_norm_ada_scale_shift_chunked,
+        )
+
+        with _ltx2_record_function("ltx2_fused_ada_direct::norm_scale_shift"):
+            return fused_norm_ada_scale_shift_chunked(
+                x,
+                timestep,
+                scale_shift_table,
+                int(shift_index),
+                int(scale_index),
+                "rms",
+                eps,
+            )
+    except Exception as exc:
+        _ltx2_disable_fused_ada_direct(exc)
+        return None
+
+
+def _ltx2_try_fused_residual_norm_ada_scale_shift(
+    residual: torch.Tensor,
+    x: torch.Tensor,
+    gate: torch.Tensor,
+    scale_shift_table: torch.Tensor,
+    timestep: torch.Tensor,
+    shift_index: int,
+    scale_index: int,
+    eps: float,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if (
+        not _ltx2_fused_ada_direct_enabled()
+        or _LTX2_FUSED_ADA_DIRECT_RUNTIME_DISABLED
+        or get_tp_world_size() != 1
+        or not residual.is_cuda
+        or not x.is_cuda
+        or not gate.is_cuda
+        or not timestep.is_cuda
+        or residual.dtype != torch.bfloat16
+        or x.dtype != residual.dtype
+        or gate.dtype != residual.dtype
+        or timestep.dtype != residual.dtype
+        or residual.shape != x.shape
+        or gate.shape != x.shape
+        or residual.ndim != 3
+        or timestep.ndim != 3
+        or int(timestep.shape[0]) != int(x.shape[0])
+        or int(timestep.shape[1]) != int(x.shape[1])
+        or residual.stride(-1) != 1
+        or x.stride(-1) != 1
+        or gate.stride(-1) != 1
+        or not timestep.is_contiguous()
+        or not scale_shift_table.is_cuda
+        or scale_shift_table.dtype not in (torch.bfloat16, torch.float32)
+        or scale_shift_table.ndim != 2
+        or int(scale_shift_table.shape[0]) != 9
+        or int(scale_shift_table.shape[1]) != int(x.shape[-1])
+        or scale_shift_table.stride(-1) != 1
+    ):
+        return None
+    hidden = int(x.shape[-1])
+    if hidden % 256 != 0 or hidden > 8192 or timestep.shape[-1] != 9 * hidden:
+        return None
+    try:
+        from sglang.jit_kernel.diffusion.cutedsl.ada_norm_scale_shift import (
+            fused_scale_residual_norm_ada_scale_shift_chunked,
+        )
+
+        with _ltx2_record_function(
+            "ltx2_fused_ada_direct::scale_residual_norm_scale_shift"
+        ):
+            return fused_scale_residual_norm_ada_scale_shift_chunked(
+                residual,
+                x,
+                gate,
+                timestep,
+                scale_shift_table,
+                int(shift_index),
+                int(scale_index),
+                "rms",
+                eps,
+            )
+    except Exception as exc:
+        _ltx2_disable_fused_ada_direct(exc)
+        return None
+
+def _ltx2_can_use_fused_adaln(
+    x: torch.Tensor,
+    scale: torch.Tensor,
+    shift: torch.Tensor,
+    gate: torch.Tensor | None = None,
+) -> bool:
+    if (
+        not _ltx2_fused_adaln_enabled()
+        or _LTX2_FUSED_ADALN_RUNTIME_DISABLED
+        or not x.is_cuda
+        or x.ndim != 3
+        or not x.is_contiguous()
+    ):
+        return False
+    if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        return False
+    d = int(x.shape[-1])
+    if d % 256 != 0 or d > 8192:
+        return False
+    for tensor in (scale, shift, gate):
+        if tensor is None:
+            continue
+        if (
+            tensor.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+            or tensor.stride(-1) != 1
+            or tensor.shape[-1] != d
+        ):
+            return False
+    return _ltx2_get_fused_adaln_kernels() is not None
+
+
+def _ltx2_modulate(
+    x: torch.Tensor,
+    scale: torch.Tensor,
+    shift: torch.Tensor,
+) -> torch.Tensor:
+    if (
+        _ltx2_fused_modulate_enabled()
+        and not _LTX2_FUSED_MODULATE_RUNTIME_DISABLED
+        and x.is_cuda
+        and x.ndim == 3
+        and x.is_contiguous()
+        and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
+        and scale.is_cuda
+        and shift.is_cuda
+        and scale.dtype == x.dtype
+        and shift.dtype == x.dtype
+        and scale.shape[-1] == x.shape[-1]
+        and shift.shape[-1] == x.shape[-1]
+    ):
+        try:
+            from sglang.jit_kernel.diffusion.triton.scale_shift import (
+                fuse_scale_shift_kernel,
+            )
+
+            with _ltx2_record_function("ltx2_fused_modulate::scale_shift"):
+                return fuse_scale_shift_kernel(x, scale, shift, scale_constant=1.0)
+        except Exception as exc:
+            _ltx2_disable_fused_modulate(exc)
+    return x * (1 + scale) + shift
+
+
+def _ltx2_residual_gate_add(
+    residual: torch.Tensor,
+    x: torch.Tensor,
+    gate: torch.Tensor,
+) -> torch.Tensor:
+    can_use_fused = (
+        _ltx2_fused_residual_gate_enabled()
+        and residual.is_cuda
+        and x.is_cuda
+        and gate.is_cuda
+        and residual.dtype == x.dtype
+        and gate.dtype == x.dtype
+    )
+    if can_use_fused:
+        with _ltx2_record_function("ltx2_fused_residual_gate::addcmul"):
+            return torch.addcmul(residual, x, gate)
+    return residual + x * gate
+
+
+def _ltx2_try_fused_ffn_proj_in_gelu(
+    x: torch.Tensor,
+    proj_in: nn.Module,
+) -> torch.Tensor | None:
+    if (
+        not _ltx2_fused_ffn_proj_in_gelu_enabled()
+        or get_tp_world_size() != 1
+        or not x.is_cuda
+        or x.dtype not in (torch.float16, torch.bfloat16)
+        or x.ndim < 2
+        or x.stride(-1) != 1
+    ):
+        return None
+    base = _ltx2_linear_base_for_fusion(proj_in)
+    if base is None:
+        return None
+    if getattr(base, "gather_output", False) or getattr(
+        base, "skip_bias_add", False
+    ):
+        return None
+    if base.quant_method.__class__.__name__ != "UnquantizedLinearMethod":
+        return None
+
+    weight = getattr(base, "weight", None)
+    bias = getattr(base, "bias", None)
+    if weight is None or bias is None:
+        return None
+    if (
+        weight.device != x.device
+        or bias.device != x.device
+        or weight.dtype != x.dtype
+        or bias.dtype != x.dtype
+        or weight.ndim != 2
+        or bias.ndim != 1
+        or weight.shape[1] != x.shape[-1]
+        or weight.shape[0] != bias.shape[0]
+        or weight.stride(-1) != 1
+    ):
+        return None
+
+    x_2d = x.reshape(-1, x.shape[-1])
+    with _ltx2_record_function("ltx2_fused_ffn_proj_in_gelu::addmm_activation"):
+        out = torch.ops.aten._addmm_activation.default(
+            bias,
+            x_2d,
+            weight.t(),
+            beta=1,
+            alpha=1,
+            use_gelu=True,
+        )
+    return out.reshape(*x.shape[:-1], weight.shape[0])
+
+
+def _ltx2_norm_scale_shift(
+    x: torch.Tensor,
+    scale: torch.Tensor,
+    shift: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    if _ltx2_can_use_fused_adaln(x, scale, shift):
+        kernels = _ltx2_get_fused_adaln_kernels()
+        assert kernels is not None
+        fused_norm_scale_shift, _ = kernels
+        try:
+            with _ltx2_record_function("ltx2_fused_adaln::norm_scale_shift"):
+                return fused_norm_scale_shift(x, None, None, scale, shift, "rms", eps)
+        except Exception as exc:
+            _ltx2_disable_fused_adaln(exc)
+    return _ltx2_modulate(rms_norm(x, eps), scale, shift)
+
+
+def _ltx2_residual_norm_scale_shift(
+    residual: torch.Tensor,
+    x: torch.Tensor,
+    gate: torch.Tensor,
+    scale: torch.Tensor,
+    shift: torch.Tensor,
+    eps: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if _ltx2_can_use_fused_adaln(residual, scale, shift, gate) and x.is_contiguous():
+        kernels = _ltx2_get_fused_adaln_kernels()
+        assert kernels is not None
+        _, fused_scale_residual_norm_scale_shift = kernels
+        try:
+            with _ltx2_record_function(
+                "ltx2_fused_adaln::scale_residual_norm_scale_shift"
+            ):
+                return fused_scale_residual_norm_scale_shift(
+                    residual, x, gate, None, None, scale, shift, "rms", eps
+                )
+        except Exception as exc:
+            _ltx2_disable_fused_adaln(exc)
+    residual_out = _ltx2_residual_gate_add(residual, x, gate)
+    return _ltx2_modulate(rms_norm(residual_out, eps), scale, shift), residual_out
+
+
 class LTX2TextProjection(nn.Module):
     def __init__(
         self,
@@ -533,6 +1753,7 @@ class LTX2Attention(nn.Module):
         apply_gated_attention: bool = False,
         supported_attention_backends: set[AttentionBackendEnum] | None = None,
         prefix: str = "",
+        profile_prefix: str | None = None,
         quant_config: QuantizationConfig | None = None,
     ) -> None:
         super().__init__()
@@ -547,6 +1768,7 @@ class LTX2Attention(nn.Module):
         self.use_local_attention = bool(use_local_attention)
         self.apply_gated_attention = bool(apply_gated_attention)
         self.prefix = prefix
+        self.profile_prefix = profile_prefix or prefix
 
         tp_size = get_tp_world_size()
         if tp_size <= 0:
@@ -586,6 +1808,10 @@ class LTX2Attention(nn.Module):
             quant_config=quant_config,
         )
         self.to_gate_logits: ColumnParallelLinear | None = None
+        self._qkv_fused_cache: tuple[object, ...] | None = None
+        self._qkv_fused_projection_disabled = False
+        self._audio_qkvg_fused_cache: tuple[object, ...] | None = None
+        self._audio_qkvg_fused_projection_disabled = False
         if self.apply_gated_attention:
             self.to_gate_logits = ColumnParallelLinear(
                 self.query_dim,
@@ -594,6 +1820,9 @@ class LTX2Attention(nn.Module):
                 gather_output=False,
                 quant_config=quant_config,
             )
+        self._q_gate_fused_cache: tuple[object, ...] | None = None
+        self._kv_fused_cache: tuple[object, ...] | None = None
+        self._kv_fused_projection_disabled = False
 
         self.q_norm: nn.Module | None = None
         self.k_norm: nn.Module | None = None
@@ -650,7 +1879,516 @@ class LTX2Attention(nn.Module):
                 allow_cudnn_sdp=True,
             )
 
-    def forward(
+    @staticmethod
+    def _q_gate_tensor_signature(tensor: torch.Tensor) -> tuple[object, ...]:
+        return (
+            tensor.data_ptr(),
+            tuple(tensor.shape),
+            tuple(tensor.stride()),
+            tensor.dtype,
+            tensor.device,
+            getattr(tensor, "_version", 0),
+        )
+
+    def _try_fused_audio_qkvg_projection(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        if (
+            not _ltx2_fused_audio_qkvg_enabled()
+            or self._audio_qkvg_fused_projection_disabled
+            or get_tp_world_size() != 1
+            or self.to_gate_logits is None
+            or not x.is_cuda
+            or x.dtype not in (torch.float16, torch.bfloat16)
+            or x.shape[-1] != self.query_dim
+            or self.query_dim != self.context_dim
+            or self.query_dim != 2048
+            or self.inner_dim != 2048
+        ):
+            return None
+        to_q = _ltx2_linear_base_for_fusion(self.to_q)
+        to_k = _ltx2_linear_base_for_fusion(self.to_k)
+        to_v = _ltx2_linear_base_for_fusion(self.to_v)
+        to_gate = _ltx2_linear_base_for_fusion(self.to_gate_logits)
+        if to_q is None or to_k is None or to_v is None or to_gate is None:
+            return None
+        if any(
+            getattr(layer, "gather_output", False)
+            for layer in (to_q, to_k, to_v, to_gate)
+        ):
+            return None
+        if any(
+            layer.quant_method.__class__.__name__ != "UnquantizedLinearMethod"
+            for layer in (to_q, to_k, to_v, to_gate)
+        ):
+            return None
+
+        q_weight = getattr(to_q, "weight", None)
+        k_weight = getattr(to_k, "weight", None)
+        v_weight = getattr(to_v, "weight", None)
+        gate_weight = getattr(to_gate, "weight", None)
+        q_bias = getattr(to_q, "bias", None)
+        k_bias = getattr(to_k, "bias", None)
+        v_bias = getattr(to_v, "bias", None)
+        gate_bias = getattr(to_gate, "bias", None)
+        tensors = (
+            q_weight,
+            k_weight,
+            v_weight,
+            gate_weight,
+            q_bias,
+            k_bias,
+            v_bias,
+            gate_bias,
+        )
+        if any(tensor is None for tensor in tensors):
+            return None
+        assert q_weight is not None and k_weight is not None and v_weight is not None
+        assert gate_weight is not None
+        assert q_bias is not None and k_bias is not None and v_bias is not None
+        assert gate_bias is not None
+        if any(tensor.device != x.device or tensor.dtype != x.dtype for tensor in tensors):
+            return None
+        if (
+            q_weight.ndim != 2
+            or k_weight.ndim != 2
+            or v_weight.ndim != 2
+            or gate_weight.ndim != 2
+            or q_bias.ndim != 1
+            or k_bias.ndim != 1
+            or v_bias.ndim != 1
+            or gate_bias.ndim != 1
+            or q_weight.shape[1] != x.shape[-1]
+            or k_weight.shape[1] != x.shape[-1]
+            or v_weight.shape[1] != x.shape[-1]
+            or gate_weight.shape[1] != x.shape[-1]
+            or q_weight.shape[0] != q_bias.shape[0]
+            or k_weight.shape[0] != k_bias.shape[0]
+            or v_weight.shape[0] != v_bias.shape[0]
+            or gate_weight.shape[0] != gate_bias.shape[0]
+            or gate_weight.shape[0] != self.heads
+            or q_weight.stride(-1) != 1
+            or k_weight.stride(-1) != 1
+            or v_weight.stride(-1) != 1
+            or gate_weight.stride(-1) != 1
+        ):
+            return None
+
+        try:
+            q_out = int(q_weight.shape[0])
+            k_out = int(k_weight.shape[0])
+            v_out = int(v_weight.shape[0])
+            gate_out = int(gate_weight.shape[0])
+            signature = (
+                self._q_gate_tensor_signature(q_weight),
+                self._q_gate_tensor_signature(k_weight),
+                self._q_gate_tensor_signature(v_weight),
+                self._q_gate_tensor_signature(gate_weight),
+                self._q_gate_tensor_signature(q_bias),
+                self._q_gate_tensor_signature(k_bias),
+                self._q_gate_tensor_signature(v_bias),
+                self._q_gate_tensor_signature(gate_bias),
+            )
+            cache = self._audio_qkvg_fused_cache
+            if cache is None or cache[0] != signature:
+                with torch.no_grad():
+                    fused_weight = torch.cat(
+                        (
+                            q_weight.detach(),
+                            k_weight.detach(),
+                            v_weight.detach(),
+                            gate_weight.detach(),
+                        ),
+                        dim=0,
+                    ).contiguous()
+                    fused_bias = torch.cat(
+                        (
+                            q_bias.detach(),
+                            k_bias.detach(),
+                            v_bias.detach(),
+                            gate_bias.detach(),
+                        ),
+                        dim=0,
+                    ).contiguous()
+                cache = (
+                    signature,
+                    q_out,
+                    k_out,
+                    v_out,
+                    gate_out,
+                    fused_weight,
+                    fused_bias,
+                )
+                self._audio_qkvg_fused_cache = cache
+
+            _, q_out, k_out, v_out, gate_out, fused_weight, fused_bias = cache
+            with _ltx2_record_function("ltx2_fused_audio_qkvg::linear"):
+                fused = F.linear(x, fused_weight, fused_bias)
+            q = fused[..., :q_out]
+            k = fused[..., q_out : q_out + k_out]
+            v = fused[..., q_out + k_out : q_out + k_out + v_out]
+            gate = fused[
+                ...,
+                q_out + k_out + v_out : q_out + k_out + v_out + gate_out,
+            ]
+            return q, k, v, gate
+        except Exception:
+            self._audio_qkvg_fused_projection_disabled = True
+            self._audio_qkvg_fused_cache = None
+            return None
+
+    def _try_fused_qkv_projection(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        if (
+            not _ltx2_fused_qkv_enabled()
+            or self._qkv_fused_projection_disabled
+            or not x.is_cuda
+            or x.dtype not in (torch.float16, torch.bfloat16)
+            or x.shape[-1] != self.query_dim
+            or self.query_dim != self.context_dim
+        ):
+            return None
+        to_q = _ltx2_linear_base_for_fusion(self.to_q)
+        to_k = _ltx2_linear_base_for_fusion(self.to_k)
+        to_v = _ltx2_linear_base_for_fusion(self.to_v)
+        if to_q is None or to_k is None or to_v is None:
+            return None
+        if (
+            getattr(to_q, "gather_output", False)
+            or getattr(to_k, "gather_output", False)
+            or getattr(to_v, "gather_output", False)
+        ):
+            return None
+        if (
+            to_q.quant_method.__class__.__name__ != "UnquantizedLinearMethod"
+            or to_k.quant_method.__class__.__name__ != "UnquantizedLinearMethod"
+            or to_v.quant_method.__class__.__name__ != "UnquantizedLinearMethod"
+        ):
+            return None
+
+        q_weight = getattr(to_q, "weight", None)
+        k_weight = getattr(to_k, "weight", None)
+        v_weight = getattr(to_v, "weight", None)
+        q_bias = getattr(to_q, "bias", None)
+        k_bias = getattr(to_k, "bias", None)
+        v_bias = getattr(to_v, "bias", None)
+        if any(
+            tensor is None
+            for tensor in (q_weight, k_weight, v_weight, q_bias, k_bias, v_bias)
+        ):
+            return None
+        assert q_weight is not None and k_weight is not None and v_weight is not None
+        assert q_bias is not None and k_bias is not None and v_bias is not None
+        tensors = (q_weight, k_weight, v_weight, q_bias, k_bias, v_bias)
+        if any(tensor.device != x.device or tensor.dtype != x.dtype for tensor in tensors):
+            return None
+        if (
+            q_weight.ndim != 2
+            or k_weight.ndim != 2
+            or v_weight.ndim != 2
+            or q_bias.ndim != 1
+            or k_bias.ndim != 1
+            or v_bias.ndim != 1
+            or q_weight.shape[1] != x.shape[-1]
+            or k_weight.shape[1] != x.shape[-1]
+            or v_weight.shape[1] != x.shape[-1]
+            or q_weight.shape[0] != q_bias.shape[0]
+            or k_weight.shape[0] != k_bias.shape[0]
+            or v_weight.shape[0] != v_bias.shape[0]
+            or q_weight.stride(-1) != 1
+            or k_weight.stride(-1) != 1
+            or v_weight.stride(-1) != 1
+        ):
+            return None
+
+        try:
+            q_out = int(q_weight.shape[0])
+            k_out = int(k_weight.shape[0])
+            v_out = int(v_weight.shape[0])
+            signature = (
+                self._q_gate_tensor_signature(q_weight),
+                self._q_gate_tensor_signature(k_weight),
+                self._q_gate_tensor_signature(v_weight),
+                self._q_gate_tensor_signature(q_bias),
+                self._q_gate_tensor_signature(k_bias),
+                self._q_gate_tensor_signature(v_bias),
+            )
+            cache = self._qkv_fused_cache
+            if cache is None or cache[0] != signature:
+                with torch.no_grad():
+                    fused_weight = torch.cat(
+                        (
+                            q_weight.detach(),
+                            k_weight.detach(),
+                            v_weight.detach(),
+                        ),
+                        dim=0,
+                    ).contiguous()
+                    fused_bias = torch.cat(
+                        (q_bias.detach(), k_bias.detach(), v_bias.detach()), dim=0
+                    ).contiguous()
+                cache = (signature, q_out, k_out, v_out, fused_weight, fused_bias)
+                self._qkv_fused_cache = cache
+
+            _, q_out, k_out, v_out, fused_weight, fused_bias = cache
+            with _ltx2_record_function("ltx2_fused_qkv::linear"):
+                fused = F.linear(x, fused_weight, fused_bias)
+            q = fused[..., :q_out]
+            k = fused[..., q_out : q_out + k_out]
+            v = fused[..., q_out + k_out : q_out + k_out + v_out]
+            return q, k, v
+        except Exception:
+            self._qkv_fused_projection_disabled = True
+            self._qkv_fused_cache = None
+            return None
+
+    def _try_fused_kv_projection(
+        self, context: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if (
+            not _ltx2_fused_kv_enabled()
+            or self._kv_fused_projection_disabled
+            or not context.is_cuda
+            or context.dtype not in (torch.float16, torch.bfloat16)
+            or context.shape[-1] != self.context_dim
+        ):
+            return None
+        to_k = _ltx2_linear_base_for_fusion(self.to_k)
+        to_v = _ltx2_linear_base_for_fusion(self.to_v)
+        if to_k is None or to_v is None:
+            return None
+        if getattr(to_k, "gather_output", False) or getattr(
+            to_v, "gather_output", False
+        ):
+            return None
+        if (
+            to_k.quant_method.__class__.__name__ != "UnquantizedLinearMethod"
+            or to_v.quant_method.__class__.__name__ != "UnquantizedLinearMethod"
+        ):
+            return None
+
+        k_weight = getattr(to_k, "weight", None)
+        v_weight = getattr(to_v, "weight", None)
+        k_bias = getattr(to_k, "bias", None)
+        v_bias = getattr(to_v, "bias", None)
+        if any(tensor is None for tensor in (k_weight, v_weight, k_bias, v_bias)):
+            return None
+        assert k_weight is not None and v_weight is not None
+        assert k_bias is not None and v_bias is not None
+        if (
+            k_weight.device != context.device
+            or v_weight.device != context.device
+            or k_bias.device != context.device
+            or v_bias.device != context.device
+            or k_weight.dtype != context.dtype
+            or v_weight.dtype != context.dtype
+            or k_bias.dtype != context.dtype
+            or v_bias.dtype != context.dtype
+            or k_weight.ndim != 2
+            or v_weight.ndim != 2
+            or k_bias.ndim != 1
+            or v_bias.ndim != 1
+            or k_weight.shape[1] != context.shape[-1]
+            or v_weight.shape[1] != context.shape[-1]
+            or k_weight.shape[0] != k_bias.shape[0]
+            or v_weight.shape[0] != v_bias.shape[0]
+            or k_weight.stride(-1) != 1
+            or v_weight.stride(-1) != 1
+        ):
+            return None
+
+        try:
+            k_out = int(k_weight.shape[0])
+            v_out = int(v_weight.shape[0])
+            signature = (
+                self._q_gate_tensor_signature(k_weight),
+                self._q_gate_tensor_signature(v_weight),
+                self._q_gate_tensor_signature(k_bias),
+                self._q_gate_tensor_signature(v_bias),
+            )
+            cache = self._kv_fused_cache
+            if cache is None or cache[0] != signature:
+                with torch.no_grad():
+                    fused_weight = torch.cat(
+                        (k_weight.detach(), v_weight.detach()), dim=0
+                    ).contiguous()
+                    fused_bias = torch.cat(
+                        (k_bias.detach(), v_bias.detach()), dim=0
+                    ).contiguous()
+                cache = (signature, k_out, v_out, fused_weight, fused_bias)
+                self._kv_fused_cache = cache
+
+            _, k_out, v_out, fused_weight, fused_bias = cache
+            with _ltx2_record_function("ltx2_fused_kv::linear"):
+                fused = F.linear(context, fused_weight, fused_bias)
+            return fused[..., :k_out], fused[..., k_out : k_out + v_out]
+        except Exception:
+            self._kv_fused_projection_disabled = True
+            self._kv_fused_cache = None
+            return None
+
+    def _try_fused_q_gate_projection(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if (
+            not _ltx2_fused_q_gate_enabled()
+            or _LTX2_FUSED_Q_GATE_RUNTIME_DISABLED
+            or self.to_gate_logits is None
+            or self.to_q.gather_output
+            or self.to_gate_logits.gather_output
+            or not x.is_cuda
+            or x.dtype not in (torch.float16, torch.bfloat16)
+            or x.shape[-1] != self.query_dim
+        ):
+            return None
+        if (
+            self.to_q.quant_method.__class__.__name__ != "UnquantizedLinearMethod"
+            or self.to_gate_logits.quant_method.__class__.__name__
+            != "UnquantizedLinearMethod"
+        ):
+            return None
+
+        q_weight = getattr(self.to_q, "weight", None)
+        gate_weight = getattr(self.to_gate_logits, "weight", None)
+        q_bias = getattr(self.to_q, "bias", None)
+        gate_bias = getattr(self.to_gate_logits, "bias", None)
+        if any(tensor is None for tensor in (q_weight, gate_weight, q_bias, gate_bias)):
+            return None
+        assert q_weight is not None and gate_weight is not None
+        assert q_bias is not None and gate_bias is not None
+        if (
+            q_weight.device != x.device
+            or gate_weight.device != x.device
+            or q_bias.device != x.device
+            or gate_bias.device != x.device
+            or q_weight.dtype != x.dtype
+            or gate_weight.dtype != x.dtype
+            or q_bias.dtype != x.dtype
+            or gate_bias.dtype != x.dtype
+            or q_weight.ndim != 2
+            or gate_weight.ndim != 2
+            or q_bias.ndim != 1
+            or gate_bias.ndim != 1
+            or q_weight.shape[1] != x.shape[-1]
+            or gate_weight.shape[1] != x.shape[-1]
+            or q_weight.shape[0] != q_bias.shape[0]
+            or gate_weight.shape[0] != gate_bias.shape[0]
+            or q_weight.stride(-1) != 1
+            or gate_weight.stride(-1) != 1
+        ):
+            return None
+
+        try:
+            q_out = int(q_weight.shape[0])
+            gate_out = int(gate_weight.shape[0])
+            signature = (
+                self._q_gate_tensor_signature(q_weight),
+                self._q_gate_tensor_signature(gate_weight),
+                self._q_gate_tensor_signature(q_bias),
+                self._q_gate_tensor_signature(gate_bias),
+            )
+            cache = self._q_gate_fused_cache
+            if cache is None or cache[0] != signature:
+                with torch.no_grad():
+                    fused_weight = torch.cat(
+                        (q_weight.detach(), gate_weight.detach()), dim=0
+                    ).contiguous()
+                    fused_bias = torch.cat(
+                        (q_bias.detach(), gate_bias.detach()), dim=0
+                    ).contiguous()
+                cache = (signature, q_out, gate_out, fused_weight, fused_bias)
+                self._q_gate_fused_cache = cache
+
+            _, q_out, gate_out, fused_weight, fused_bias = cache
+            with _ltx2_record_function("ltx2_fused_q_gate::linear"):
+                fused = F.linear(x, fused_weight, fused_bias)
+            return fused[..., :q_out], fused[..., q_out : q_out + gate_out]
+        except Exception as exc:
+            _ltx2_disable_fused_q_gate(exc)
+            self._q_gate_fused_cache = None
+            return None
+
+    def _try_compiled_gate_to_out(
+        self,
+        out: torch.Tensor,
+        gate_logits: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if (
+            not _ltx2_compile_gate_to_out_enabled()
+            or _LTX2_COMPILED_GATE_TO_OUT_RUNTIME_DISABLED
+            or get_tp_world_size() != 1
+            or not out.is_cuda
+            or not gate_logits.is_cuda
+            or out.dtype not in (torch.float16, torch.bfloat16)
+            or gate_logits.dtype != out.dtype
+            or out.ndim != 4
+            or gate_logits.ndim != 3
+            or out.shape[:3] != gate_logits.shape
+            or out.shape[2] != self.local_heads
+            or out.shape[3] != self.dim_head
+            or gate_logits.shape[-1] != self.local_heads
+            or self.heads != 32
+            or self.local_heads != 32
+            or not out.is_contiguous()
+            or gate_logits.stride(-1) != 1
+        ):
+            return None
+        is_video_self_shape = (
+            self.query_dim == self.inner_dim
+            and self.query_dim == 4096
+            and self.dim_head == 128
+        )
+        is_a2v_shape = (
+            _ltx2_compile_a2v_gate_to_out_enabled()
+            and self.query_dim == 4096
+            and self.inner_dim == 2048
+            and self.dim_head == 64
+        )
+        if not (is_video_self_shape or is_a2v_shape):
+            return None
+
+        to_out = _ltx2_linear_base_for_fusion(self.to_out[0])
+        if to_out is None:
+            return None
+        if (
+            not getattr(to_out, "input_is_parallel", False)
+            or getattr(to_out, "skip_bias_add", False)
+            or not getattr(to_out, "reduce_results", True)
+            or to_out.quant_method.__class__.__name__ != "UnquantizedLinearMethod"
+        ):
+            return None
+
+        weight = getattr(to_out, "weight", None)
+        bias = getattr(to_out, "bias", None)
+        if weight is None or bias is None:
+            return None
+        if (
+            weight.device != out.device
+            or bias.device != out.device
+            or weight.dtype != out.dtype
+            or bias.dtype != out.dtype
+            or weight.ndim != 2
+            or bias.ndim != 1
+            or weight.shape != (self.query_dim, self.inner_dim)
+            or bias.shape[0] != self.query_dim
+            or weight.stride(-1) != 1
+        ):
+            return None
+
+        try:
+            compiled_gate_to_out = _ltx2_get_compiled_gate_to_out()
+            with _ltx2_record_function("ltx2_compiled_gate_to_out::gate_linear"):
+                return compiled_gate_to_out(out, gate_logits, weight, bias)
+        except Exception as exc:
+            _ltx2_disable_compiled_gate_to_out(exc)
+            return None
+
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+        with _ltx2_record_function(f"ltx2_attention::{self.profile_prefix}"):
+            return self._forward_impl(*args, **kwargs)
+
+    def _forward_impl(
         self,
         x: torch.Tensor,
         context: torch.Tensor | None = None,
@@ -662,38 +2400,109 @@ class LTX2Attention(nn.Module):
         skip_sequence_parallel_override: bool = False,
         gather_context_kv_for_sp: bool = False,
     ) -> torch.Tensor:
+        profile_prefix = self.profile_prefix
         gate_input = x
         context_ = x if context is None else context
-        v, _ = self.to_v(context_)
         use_attention = not all_perturbed
+        fused_gate_logits = None
+        fused_kv = None
+        fused_qkv = None
+        fused_audio_qkvg = None
+        if use_attention and context is None:
+            with _ltx2_record_function(
+                f"ltx2_attention_proj::{profile_prefix}.audio_qkvg"
+            ):
+                fused_audio_qkvg = self._try_fused_audio_qkvg_projection(x)
+        if use_attention and context is None and fused_audio_qkvg is None:
+            with _ltx2_record_function(f"ltx2_attention_proj::{profile_prefix}.qkv"):
+                fused_qkv = self._try_fused_qkv_projection(x)
+        if fused_audio_qkvg is not None:
+            q, k, v, fused_gate_logits = fused_audio_qkvg
+        elif fused_qkv is None:
+            if use_attention:
+                with _ltx2_record_function(
+                    f"ltx2_attention_proj::{profile_prefix}.kv"
+                ):
+                    fused_kv = self._try_fused_kv_projection(context_)
+            if fused_kv is None:
+                with _ltx2_record_function(
+                    f"ltx2_attention_proj::{profile_prefix}.to_v"
+                ):
+                    v, _ = self.to_v(context_)
+            else:
+                k, v = fused_kv
+        else:
+            q, k, v = fused_qkv
 
         if use_attention:
-            q, _ = self.to_q(x)
-            k, _ = self.to_k(context_)
+            if fused_qkv is None and fused_audio_qkvg is None:
+                fused_q_gate = None
+                if self.to_gate_logits is not None:
+                    with _ltx2_record_function(
+                        f"ltx2_attention_proj::{profile_prefix}.q_gate"
+                    ):
+                        fused_q_gate = self._try_fused_q_gate_projection(x)
+                if fused_q_gate is None:
+                    with _ltx2_record_function(
+                        f"ltx2_attention_proj::{profile_prefix}.to_q"
+                    ):
+                        q, _ = self.to_q(x)
+                else:
+                    q, fused_gate_logits = fused_q_gate
+                if fused_kv is None:
+                    with _ltx2_record_function(
+                        f"ltx2_attention_proj::{profile_prefix}.to_k"
+                    ):
+                        k, _ = self.to_k(context_)
 
-            if self.qk_norm:
+            applied_fused_qknorm_rope = False
+            if self.qk_norm and pe is not None:
                 assert self.q_norm is not None and self.k_norm is not None
-                q = self.q_norm(q)
-                k = self.k_norm(k)
+                fused_qk_rope = _ltx2_try_fused_qknorm_split_rope(
+                    q, k, self.q_norm, self.k_norm, self.norm_eps, pe, k_pe
+                )
+                if fused_qk_rope is not None:
+                    q, k = fused_qk_rope
+                    applied_fused_qknorm_rope = True
 
-            if pe is not None:
+            if self.qk_norm and not applied_fused_qknorm_rope:
+                assert self.q_norm is not None and self.k_norm is not None
+                with _ltx2_record_function(
+                    f"ltx2_attention_norm::{profile_prefix}.qk_norm"
+                ):
+                    fused_qk = _ltx2_try_fused_qknorm(
+                        q, k, self.q_norm, self.k_norm, self.norm_eps
+                    )
+                    if fused_qk is None:
+                        q = self.q_norm(q)
+                        k = self.k_norm(k)
+                    else:
+                        q, k = fused_qk
+
+            if pe is not None and not applied_fused_qknorm_rope:
                 cos, sin = pe
                 k_cos, k_sin = pe if k_pe is None else k_pe
                 tp_size = get_tp_world_size()
                 if tp_size > 1:
-                    tp_rank = get_tp_rank()
-                    cos, sin = self._slice_rope_for_tp(
-                        cos, sin, tp_rank=tp_rank, tp_size=tp_size
-                    )
-                    k_cos, k_sin = self._slice_rope_for_tp(
-                        k_cos, k_sin, tp_rank=tp_rank, tp_size=tp_size
-                    )
-                if cos.dim() == 3:
-                    q = apply_interleaved_rotary_emb(q, (cos, sin))
-                    k = apply_interleaved_rotary_emb(k, (k_cos, k_sin))
-                else:
-                    q = apply_split_rotary_emb(q, (cos, sin))
-                    k = apply_split_rotary_emb(k, (k_cos, k_sin))
+                    with _ltx2_record_function(
+                        f"ltx2_attention_rotary::{profile_prefix}.tp_slice"
+                    ):
+                        tp_rank = get_tp_rank()
+                        cos, sin = self._slice_rope_for_tp(
+                            cos, sin, tp_rank=tp_rank, tp_size=tp_size
+                        )
+                        k_cos, k_sin = self._slice_rope_for_tp(
+                            k_cos, k_sin, tp_rank=tp_rank, tp_size=tp_size
+                        )
+                with _ltx2_record_function(
+                    f"ltx2_attention_rotary::{profile_prefix}.qk_apply"
+                ):
+                    if cos.dim() == 3:
+                        q = apply_interleaved_rotary_emb(q, (cos, sin))
+                        k = apply_interleaved_rotary_emb(k, (k_cos, k_sin))
+                    else:
+                        q = apply_split_rotary_emb(q, (cos, sin))
+                        k = apply_split_rotary_emb(k, (k_cos, k_sin))
 
         v = v.view(*v.shape[:-1], self.local_heads, self.dim_head)
         if use_attention:
@@ -701,51 +2510,77 @@ class LTX2Attention(nn.Module):
             k = k.view(*k.shape[:-1], self.local_heads, self.dim_head)
 
             if gather_context_kv_for_sp:
-                k_full = sequence_model_parallel_all_gather(k.contiguous(), dim=1)
-                v_full = sequence_model_parallel_all_gather(v.contiguous(), dim=1)
-                gathered_mask = None
-                if mask is not None:
-                    gathered_mask = sequence_model_parallel_all_gather(
-                        mask.contiguous(), dim=1
-                    )
+                with _ltx2_record_function(
+                    f"ltx2_attention_sp::{profile_prefix}.all_gather"
+                ):
+                    k_full = sequence_model_parallel_all_gather(k.contiguous(), dim=1)
+                    v_full = sequence_model_parallel_all_gather(v.contiguous(), dim=1)
+                    gathered_mask = None
+                    if mask is not None:
+                        gathered_mask = sequence_model_parallel_all_gather(
+                            mask.contiguous(), dim=1
+                        )
                 if self.use_local_attention:
-                    out = self.attn(q, k_full, v_full, attn_mask=gathered_mask)
+                    with _ltx2_record_function(
+                        f"ltx2_attention_core::{profile_prefix}"
+                    ):
+                        out = self.attn(q, k_full, v_full, attn_mask=gathered_mask)
                 else:
+                    with _ltx2_record_function(
+                        f"ltx2_attention_core::{profile_prefix}"
+                    ):
+                        out = self.attn(
+                            q,
+                            k_full,
+                            v_full,
+                            attn_mask=gathered_mask,
+                            skip_sequence_parallel_override=True,
+                        )
+            elif self.use_local_attention:
+                with _ltx2_record_function(f"ltx2_attention_core::{profile_prefix}"):
+                    out = self.attn(q, k, v, attn_mask=mask)
+            else:
+                with _ltx2_record_function(f"ltx2_attention_core::{profile_prefix}"):
                     out = self.attn(
                         q,
-                        k_full,
-                        v_full,
-                        attn_mask=gathered_mask,
-                        skip_sequence_parallel_override=True,
+                        k,
+                        v,
+                        attn_mask=mask,
+                        skip_sequence_parallel_override=skip_sequence_parallel_override,
                     )
-            elif self.use_local_attention:
-                out = self.attn(q, k, v, attn_mask=mask)
-            else:
-                out = self.attn(
-                    q,
-                    k,
-                    v,
-                    attn_mask=mask,
-                    skip_sequence_parallel_override=skip_sequence_parallel_override,
-                )
 
             if perturbation_mask is not None:
-                if perturbation_mask.ndim == out.ndim - 1:
-                    perturbation_mask = perturbation_mask.unsqueeze(-1)
-                out = out * perturbation_mask + v * (1 - perturbation_mask)
+                with _ltx2_record_function(
+                    f"ltx2_attention_mix::{profile_prefix}.perturbation"
+                ):
+                    if perturbation_mask.ndim == out.ndim - 1:
+                        perturbation_mask = perturbation_mask.unsqueeze(-1)
+                    out = out * perturbation_mask + v * (1 - perturbation_mask)
 
         if not use_attention:
             out = v
 
         if self.to_gate_logits is not None:
-            gate_logits, _ = self.to_gate_logits(gate_input)
-            b, t = out.shape[:2]
-            out = out.view(b, t, self.local_heads, self.dim_head)
-            out = out * (2.0 * torch.sigmoid(gate_logits).unsqueeze(-1))
-            out = out.view(b, t, self.local_heads * self.dim_head)
+            with _ltx2_record_function(
+                f"ltx2_attention_proj::{profile_prefix}.gate_logits"
+            ):
+                if fused_gate_logits is None:
+                    gate_logits, _ = self.to_gate_logits(gate_input)
+                else:
+                    gate_logits = fused_gate_logits
+                compiled_gate_to_out = self._try_compiled_gate_to_out(
+                    out, gate_logits
+                )
+                if compiled_gate_to_out is not None:
+                    return compiled_gate_to_out
+                b, t = out.shape[:2]
+                out = out.view(b, t, self.local_heads, self.dim_head)
+                out = out * (2.0 * torch.sigmoid(gate_logits).unsqueeze(-1))
+                out = out.view(b, t, self.local_heads * self.dim_head)
 
         out_flat = out.flatten(2)
-        out_proj, _ = self.to_out[0](out_flat)
+        with _ltx2_record_function(f"ltx2_attention_proj::{profile_prefix}.to_out"):
+            out_proj, _ = self.to_out[0](out_flat)
 
         return out_proj
 
@@ -788,9 +2623,11 @@ class LTX2FeedForward(nn.Module):
         dim: int,
         dim_out: int | None = None,
         mult: int = 4,
+        prefix: str = "",
         quant_config: QuantizationConfig | None = None,
     ) -> None:
         super().__init__()
+        self.prefix = prefix
         if dim_out is None:
             dim_out = dim
         inner_dim = int(dim * mult)
@@ -807,10 +2644,21 @@ class LTX2FeedForward(nn.Module):
             quant_config=quant_config,
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x, _ = self.proj_in(x)
-        x = self.act(x)
-        x, _ = self.proj_out(x)
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+        with _ltx2_record_function(f"ltx2_feedforward::{self.prefix}"):
+            return self._forward_impl(*args, **kwargs)
+
+    def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
+        fused_proj_in = _ltx2_try_fused_ffn_proj_in_gelu(x, self.proj_in)
+        if fused_proj_in is None:
+            with _ltx2_record_function(f"ltx2_ffn_proj::{self.prefix}.proj_in"):
+                x, _ = self.proj_in(x)
+            with _ltx2_record_function(f"ltx2_ffn_act::{self.prefix}.gelu"):
+                x = self.act(x)
+        else:
+            x = fused_proj_in
+        with _ltx2_record_function(f"ltx2_ffn_proj::{self.prefix}.proj_out"):
+            x, _ = self.proj_out(x)
         return x
 
 
@@ -853,6 +2701,7 @@ class LTX2TransformerBlock(nn.Module):
             apply_gated_attention=apply_gated_attention,
             supported_attention_backends=supported_attention_backends,
             prefix=f"{prefix}.attn1",
+            profile_prefix=f"block_{idx}.attn1",
             quant_config=quant_config,
         )
         self.audio_attn1 = LTX2Attention(
@@ -864,6 +2713,7 @@ class LTX2TransformerBlock(nn.Module):
             apply_gated_attention=apply_gated_attention,
             supported_attention_backends=supported_attention_backends,
             prefix=f"{prefix}.audio_attn1",
+            profile_prefix=f"block_{idx}.audio_attn1",
             quant_config=quant_config,
         )
 
@@ -881,6 +2731,7 @@ class LTX2TransformerBlock(nn.Module):
             apply_gated_attention=apply_gated_attention,
             supported_attention_backends=supported_attention_backends,
             prefix=f"{prefix}.attn2",
+            profile_prefix=f"block_{idx}.attn2",
             quant_config=quant_config,
         )
         self.audio_attn2 = LTX2Attention(
@@ -894,6 +2745,7 @@ class LTX2TransformerBlock(nn.Module):
             apply_gated_attention=apply_gated_attention,
             supported_attention_backends=supported_attention_backends,
             prefix=f"{prefix}.audio_attn2",
+            profile_prefix=f"block_{idx}.audio_attn2",
             quant_config=quant_config,
         )
 
@@ -909,6 +2761,7 @@ class LTX2TransformerBlock(nn.Module):
             apply_gated_attention=apply_gated_attention,
             supported_attention_backends=supported_attention_backends,
             prefix=f"{prefix}.audio_to_video_attn",
+            profile_prefix=f"block_{idx}.audio_to_video_attn",
             quant_config=quant_config,
         )
         self.video_to_audio_attn = LTX2Attention(
@@ -926,13 +2779,19 @@ class LTX2TransformerBlock(nn.Module):
                 else supported_attention_backends
             ),
             prefix=f"{prefix}.video_to_audio_attn",
+            profile_prefix=f"block_{idx}.video_to_audio_attn",
             quant_config=quant_config,
         )
 
         # 4. Feedforward layers
-        self.ff = LTX2FeedForward(dim, dim_out=dim, quant_config=quant_config)
+        self.ff = LTX2FeedForward(
+            dim, dim_out=dim, prefix=f"block_{idx}.ff", quant_config=quant_config
+        )
         self.audio_ff = LTX2FeedForward(
-            audio_dim, dim_out=audio_dim, quant_config=quant_config
+            audio_dim,
+            dim_out=audio_dim,
+            prefix=f"block_{idx}.audio_ff",
+            quant_config=quant_config,
         )
 
         # 5. Modulation Parameters
@@ -961,17 +2820,24 @@ class LTX2TransformerBlock(nn.Module):
         timestep: torch.Tensor,
         indices: slice,
     ) -> tuple[torch.Tensor, ...]:
-        num_ada_params = int(scale_shift_table.shape[0])
-        ada_values = (
-            scale_shift_table[indices]
-            .unsqueeze(0)
-            .unsqueeze(0)
-            .to(device=timestep.device, dtype=timestep.dtype)
-            + timestep.reshape(batch_size, timestep.shape[1], num_ada_params, -1)[
-                :, :, indices, :
-            ]
-        ).unbind(dim=2)
-        return [t.squeeze(2) for t in ada_values]
+        with _ltx2_record_function(f"ltx2_ada_values::block_{self.idx}"):
+            fused_values = _ltx2_try_fused_ada_values3(
+                scale_shift_table, batch_size, timestep, indices
+            )
+            if fused_values is not None:
+                return fused_values
+
+            num_ada_params = int(scale_shift_table.shape[0])
+            ada_values = (
+                scale_shift_table[indices]
+                .unsqueeze(0)
+                .unsqueeze(0)
+                .to(device=timestep.device, dtype=timestep.dtype)
+                + timestep.reshape(batch_size, timestep.shape[1], num_ada_params, -1)[
+                    :, :, indices, :
+                ]
+            ).unbind(dim=2)
+            return [t.squeeze(2) for t in ada_values]
 
     def forward(
         self,
@@ -1006,42 +2872,146 @@ class LTX2TransformerBlock(nn.Module):
         a2v_cross_attn_perturbation_mask: Optional[torch.Tensor] = None,
         v2a_cross_attn_perturbation_mask: Optional[torch.Tensor] = None,
         audio_replicated_for_sp: bool = False,
+        share_block0_self_attn: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
         batch_size = hidden_states.size(0)
+        video_ada_gates = _ltx2_try_fused_ada_gates3(
+            self.scale_shift_table, batch_size, temb
+        )
+        if video_ada_gates is None:
+            video_ada_values = _ltx2_try_fused_ada_values9(
+                self.scale_shift_table, batch_size, temb
+            )
+        else:
+            video_ada_values = None
+        audio_ada_values = _ltx2_try_fused_ada_values9(
+            self.audio_scale_shift_table, batch_size, temb_audio
+        )
 
         # 1. Video and Audio Self-Attention
-        vshift_msa, vscale_msa, vgate_msa = self.get_ada_values(
-            self.scale_shift_table, batch_size, temb, slice(0, 3)
+        if video_ada_gates is not None:
+            vshift_msa = vscale_msa = None
+            vgate_msa = video_ada_gates[0]
+        elif video_ada_values is None:
+            vshift_msa, vscale_msa, vgate_msa = self.get_ada_values(
+                self.scale_shift_table, batch_size, temb, slice(0, 3)
+            )
+        else:
+            vshift_msa, vscale_msa, vgate_msa = video_ada_values[0:3]
+        share_video_self_attn = (
+            share_block0_self_attn
+            and self.idx == 0
+            and batch_size > 1
+            and video_self_attention_mask is None
+            and video_self_attn_perturbation_mask is None
+            and not skip_video_self_attn
+            and not audio_replicated_for_sp
         )
-        norm_hidden_states = (
-            rms_norm(hidden_states, self.norm_eps) * (1 + vscale_msa) + vshift_msa
-        )
-        attn_hidden_states = self.attn1(
-            norm_hidden_states,
-            mask=video_self_attention_mask,
-            pe=video_rotary_emb,
-            perturbation_mask=video_self_attn_perturbation_mask,
-            all_perturbed=skip_video_self_attn,
-            gather_context_kv_for_sp=audio_replicated_for_sp,
-        )
-        hidden_states = hidden_states + attn_hidden_states * vgate_msa
+        if share_video_self_attn:
+            norm_hidden_states = None
+            if video_ada_gates is not None:
+                norm_hidden_states = _ltx2_try_fused_norm_ada_scale_shift(
+                    hidden_states[:1],
+                    self.scale_shift_table,
+                    temb[:1],
+                    0,
+                    1,
+                    self.norm_eps,
+                )
+            if norm_hidden_states is None:
+                if vscale_msa is None or vshift_msa is None:
+                    vshift_msa, vscale_msa, _ = self.get_ada_values(
+                        self.scale_shift_table, batch_size, temb, slice(0, 3)
+                    )
+                norm_hidden_states = _ltx2_norm_scale_shift(
+                    hidden_states[:1], vscale_msa[:1], vshift_msa[:1], self.norm_eps
+                )
+            video_rotary_emb_for_attn = (
+                None
+                if video_rotary_emb is None
+                else (video_rotary_emb[0][:1], video_rotary_emb[1][:1])
+            )
+            attn_hidden_states = self.attn1(
+                norm_hidden_states,
+                pe=video_rotary_emb_for_attn,
+            ).expand(batch_size, -1, -1).contiguous()
+        else:
+            norm_hidden_states = None
+            if video_ada_gates is not None:
+                norm_hidden_states = _ltx2_try_fused_norm_ada_scale_shift(
+                    hidden_states,
+                    self.scale_shift_table,
+                    temb,
+                    0,
+                    1,
+                    self.norm_eps,
+                )
+            if norm_hidden_states is None:
+                if vscale_msa is None or vshift_msa is None:
+                    vshift_msa, vscale_msa, _ = self.get_ada_values(
+                        self.scale_shift_table, batch_size, temb, slice(0, 3)
+                    )
+                norm_hidden_states = _ltx2_norm_scale_shift(
+                    hidden_states, vscale_msa, vshift_msa, self.norm_eps
+                )
+            attn_hidden_states = self.attn1(
+                norm_hidden_states,
+                mask=video_self_attention_mask,
+                pe=video_rotary_emb,
+                perturbation_mask=video_self_attn_perturbation_mask,
+                all_perturbed=skip_video_self_attn,
+                gather_context_kv_for_sp=audio_replicated_for_sp,
+            )
+        if not self.cross_attention_adaln:
+            hidden_states = _ltx2_residual_gate_add(
+                hidden_states, attn_hidden_states, vgate_msa
+            )
 
-        ashift_msa, ascale_msa, agate_msa = self.get_ada_values(
-            self.audio_scale_shift_table, batch_size, temb_audio, slice(0, 3)
+        if audio_ada_values is None:
+            ashift_msa, ascale_msa, agate_msa = self.get_ada_values(
+                self.audio_scale_shift_table, batch_size, temb_audio, slice(0, 3)
+            )
+        else:
+            ashift_msa, ascale_msa, agate_msa = audio_ada_values[0:3]
+        share_audio_self_attn = (
+            share_block0_self_attn
+            and self.idx == 0
+            and batch_size > 1
+            and audio_self_attention_mask is None
+            and audio_self_attn_perturbation_mask is None
+            and not skip_audio_self_attn
+            and not audio_replicated_for_sp
         )
-        norm_audio_hidden_states = (
-            rms_norm(audio_hidden_states, self.norm_eps) * (1 + ascale_msa) + ashift_msa
-        )
-        attn_audio_hidden_states = self.audio_attn1(
-            norm_audio_hidden_states,
-            mask=audio_self_attention_mask,
-            pe=audio_rotary_emb,
-            perturbation_mask=audio_self_attn_perturbation_mask,
-            all_perturbed=skip_audio_self_attn,
-            skip_sequence_parallel_override=audio_replicated_for_sp,
-        )
-        audio_hidden_states = audio_hidden_states + attn_audio_hidden_states * agate_msa
+        if share_audio_self_attn:
+            norm_audio_hidden_states = _ltx2_norm_scale_shift(
+                audio_hidden_states[:1], ascale_msa[:1], ashift_msa[:1], self.norm_eps
+            )
+            audio_rotary_emb_for_attn = (
+                None
+                if audio_rotary_emb is None
+                else (audio_rotary_emb[0][:1], audio_rotary_emb[1][:1])
+            )
+            attn_audio_hidden_states = self.audio_attn1(
+                norm_audio_hidden_states,
+                pe=audio_rotary_emb_for_attn,
+            ).expand(batch_size, -1, -1).contiguous()
+        else:
+            norm_audio_hidden_states = _ltx2_norm_scale_shift(
+                audio_hidden_states, ascale_msa, ashift_msa, self.norm_eps
+            )
+            attn_audio_hidden_states = self.audio_attn1(
+                norm_audio_hidden_states,
+                mask=audio_self_attention_mask,
+                pe=audio_rotary_emb,
+                perturbation_mask=audio_self_attn_perturbation_mask,
+                all_perturbed=skip_audio_self_attn,
+                skip_sequence_parallel_override=audio_replicated_for_sp,
+            )
+        if not self.cross_attention_adaln:
+            audio_hidden_states = _ltx2_residual_gate_add(
+                audio_hidden_states, attn_audio_hidden_states, agate_msa
+            )
         # 2. Prompt Cross-Attention
         if self.cross_attention_adaln:
             # LTX2.3
@@ -1049,47 +3019,89 @@ class LTX2TransformerBlock(nn.Module):
                 raise ValueError(
                     "cross_attention_adaln requires prompt modulation tensors."
                 )
-            vshift_q, vscale_q, vgate_q = self.get_ada_values(
-                self.scale_shift_table, batch_size, temb, slice(6, 9)
-            )
+            if video_ada_gates is not None:
+                vshift_q = vscale_q = None
+                vgate_q = video_ada_gates[2]
+            elif video_ada_values is None:
+                vshift_q, vscale_q, vgate_q = self.get_ada_values(
+                    self.scale_shift_table, batch_size, temb, slice(6, 9)
+                )
+            else:
+                vshift_q, vscale_q, vgate_q = video_ada_values[6:9]
             v_prompt_shift, v_prompt_scale = self.get_ada_values(
                 self.prompt_scale_shift_table, batch_size, temb_prompt, slice(None)
             )
-            norm_hidden_states = (
-                rms_norm(hidden_states, self.norm_eps) * (1 + vscale_q) + vshift_q
-            )
-            mod_encoder_hidden_states = (
-                encoder_hidden_states * (1 + v_prompt_scale) + v_prompt_shift
+            video_q_residual_norm = None
+            if video_ada_gates is not None:
+                video_q_residual_norm = _ltx2_try_fused_residual_norm_ada_scale_shift(
+                    hidden_states,
+                    attn_hidden_states,
+                    vgate_msa,
+                    self.scale_shift_table,
+                    temb,
+                    6,
+                    7,
+                    self.norm_eps,
+                )
+            if video_q_residual_norm is None:
+                if vscale_q is None or vshift_q is None:
+                    vshift_q, vscale_q, _ = self.get_ada_values(
+                        self.scale_shift_table, batch_size, temb, slice(6, 9)
+                    )
+                norm_hidden_states, hidden_states = _ltx2_residual_norm_scale_shift(
+                    hidden_states,
+                    attn_hidden_states,
+                    vgate_msa,
+                    vscale_q,
+                    vshift_q,
+                    self.norm_eps,
+                )
+            else:
+                norm_hidden_states, hidden_states = video_q_residual_norm
+            mod_encoder_hidden_states = _ltx2_modulate(
+                encoder_hidden_states, v_prompt_scale, v_prompt_shift
             )
             attn_hidden_states = self.attn2(
                 norm_hidden_states,
                 context=mod_encoder_hidden_states,
                 mask=encoder_attention_mask,
             )
-            hidden_states = hidden_states + attn_hidden_states * vgate_q
-
-            ashift_q, ascale_q, agate_q = self.get_ada_values(
-                self.audio_scale_shift_table, batch_size, temb_audio, slice(6, 9)
+            hidden_states = _ltx2_residual_gate_add(
+                hidden_states, attn_hidden_states, vgate_q
             )
+
+            if audio_ada_values is None:
+                ashift_q, ascale_q, agate_q = self.get_ada_values(
+                    self.audio_scale_shift_table, batch_size, temb_audio, slice(6, 9)
+                )
+            else:
+                ashift_q, ascale_q, agate_q = audio_ada_values[6:9]
             a_prompt_shift, a_prompt_scale = self.get_ada_values(
                 self.audio_prompt_scale_shift_table,
                 batch_size,
                 temb_audio_prompt,
                 slice(None),
             )
-            norm_audio_hidden_states = (
-                rms_norm(audio_hidden_states, self.norm_eps) * (1 + ascale_q) + ashift_q
+            norm_audio_hidden_states, audio_hidden_states = (
+                _ltx2_residual_norm_scale_shift(
+                    audio_hidden_states,
+                    attn_audio_hidden_states,
+                    agate_msa,
+                    ascale_q,
+                    ashift_q,
+                    self.norm_eps,
+                )
             )
-            mod_audio_encoder_hidden_states = (
-                audio_encoder_hidden_states * (1 + a_prompt_scale) + a_prompt_shift
+            mod_audio_encoder_hidden_states = _ltx2_modulate(
+                audio_encoder_hidden_states, a_prompt_scale, a_prompt_shift
             )
             attn_audio_hidden_states = self.audio_attn2(
                 norm_audio_hidden_states,
                 context=mod_audio_encoder_hidden_states,
                 mask=audio_encoder_attention_mask,
             )
-            audio_hidden_states = (
-                audio_hidden_states + attn_audio_hidden_states * agate_q
+            audio_hidden_states = _ltx2_residual_gate_add(
+                audio_hidden_states, attn_audio_hidden_states, agate_q
             )
         else:
             norm_hidden_states = rms_norm(hidden_states, self.norm_eps)
@@ -1108,79 +3120,130 @@ class LTX2TransformerBlock(nn.Module):
             )
             audio_hidden_states = audio_hidden_states + attn_audio_hidden_states
         # 3. Audio-to-Video and Video-to-Audio Cross-Attention
-        norm_hidden_states = rms_norm(hidden_states, self.norm_eps)
-        norm_audio_hidden_states = rms_norm(audio_hidden_states, self.norm_eps)
+        video_dual_mod = _ltx2_try_fused_rmsnorm_ca_dual_modulate(
+            hidden_states,
+            temb_ca_scale_shift,
+            self.video_a2v_cross_attn_scale_shift_table[:4, :],
+            self.norm_eps,
+        )
+        audio_dual_mod = _ltx2_try_fused_rmsnorm_ca_dual_modulate(
+            audio_hidden_states,
+            temb_ca_audio_scale_shift,
+            self.audio_a2v_cross_attn_scale_shift_table[:4, :],
+            self.norm_eps,
+        )
 
         # Compute combined ada params
-        video_per_layer_ca_scale_shift = self.video_a2v_cross_attn_scale_shift_table[
-            :4, :
-        ]
-        video_per_layer_ca_gate = self.video_a2v_cross_attn_scale_shift_table[4:, :]
+        with _ltx2_record_function(f"ltx2_cross_ada_values::block_{self.idx}"):
+            video_per_layer_ca_gate = self.video_a2v_cross_attn_scale_shift_table[4:, :]
+            a2v_gate = (
+                video_per_layer_ca_gate[None, None, :, :].to(
+                    dtype=temb_ca_gate.dtype, device=temb_ca_gate.device
+                )
+                + temb_ca_gate.reshape(batch_size, temb_ca_gate.shape[1], 1, -1)
+            ).squeeze(2)
 
-        video_ca_scale_shift_table = (
-            video_per_layer_ca_scale_shift[None, None, :, :].to(
-                dtype=temb_ca_scale_shift.dtype, device=temb_ca_scale_shift.device
-            )
-            + temb_ca_scale_shift.reshape(
-                batch_size, temb_ca_scale_shift.shape[1], 4, -1
-            )
-        ).unbind(dim=2)
-        video_ca_gate = (
-            video_per_layer_ca_gate[None, None, :, :].to(
-                dtype=temb_ca_gate.dtype, device=temb_ca_gate.device
-            )
-            + temb_ca_gate.reshape(batch_size, temb_ca_gate.shape[1], 1, -1)
-        ).unbind(dim=2)
+            audio_per_layer_ca_gate = self.audio_a2v_cross_attn_scale_shift_table[4:, :]
+            v2a_gate = (
+                audio_per_layer_ca_gate[None, None, :, :].to(
+                    dtype=temb_ca_audio_gate.dtype,
+                    device=temb_ca_audio_gate.device,
+                )
+                + temb_ca_audio_gate.reshape(
+                    batch_size, temb_ca_audio_gate.shape[1], 1, -1
+                )
+            ).squeeze(2)
 
-        (
-            video_a2v_ca_scale,
-            video_a2v_ca_shift,
-            video_v2a_ca_scale,
-            video_v2a_ca_shift,
-        ) = [t.squeeze(2) for t in video_ca_scale_shift_table]
-        a2v_gate = video_ca_gate[0].squeeze(2)
+            if video_dual_mod is None:
+                video_per_layer_ca_scale_shift = (
+                    self.video_a2v_cross_attn_scale_shift_table[:4, :]
+                )
+                video_ca_scale_shift_table = (
+                    video_per_layer_ca_scale_shift[None, None, :, :].to(
+                        dtype=temb_ca_scale_shift.dtype,
+                        device=temb_ca_scale_shift.device,
+                    )
+                    + temb_ca_scale_shift.reshape(
+                        batch_size, temb_ca_scale_shift.shape[1], 4, -1
+                    )
+                ).unbind(dim=2)
 
-        audio_per_layer_ca_scale_shift = self.audio_a2v_cross_attn_scale_shift_table[
-            :4, :
-        ]
-        audio_per_layer_ca_gate = self.audio_a2v_cross_attn_scale_shift_table[4:, :]
+                (
+                    video_a2v_ca_scale,
+                    video_a2v_ca_shift,
+                    video_v2a_ca_scale,
+                    video_v2a_ca_shift,
+                ) = [t.squeeze(2) for t in video_ca_scale_shift_table]
 
-        audio_ca_scale_shift_table = (
-            audio_per_layer_ca_scale_shift[None, None, :, :].to(
-                dtype=temb_ca_audio_scale_shift.dtype,
-                device=temb_ca_audio_scale_shift.device,
-            )
-            + temb_ca_audio_scale_shift.reshape(
-                batch_size, temb_ca_audio_scale_shift.shape[1], 4, -1
-            )
-        ).unbind(dim=2)
-        audio_ca_gate = (
-            audio_per_layer_ca_gate[None, None, :, :].to(
-                dtype=temb_ca_audio_gate.dtype, device=temb_ca_audio_gate.device
-            )
-            + temb_ca_audio_gate.reshape(batch_size, temb_ca_audio_gate.shape[1], 1, -1)
-        ).unbind(dim=2)
+            if audio_dual_mod is None:
+                audio_per_layer_ca_scale_shift = (
+                    self.audio_a2v_cross_attn_scale_shift_table[:4, :]
+                )
+                audio_ca_scale_shift_table = (
+                    audio_per_layer_ca_scale_shift[None, None, :, :].to(
+                        dtype=temb_ca_audio_scale_shift.dtype,
+                        device=temb_ca_audio_scale_shift.device,
+                    )
+                    + temb_ca_audio_scale_shift.reshape(
+                        batch_size, temb_ca_audio_scale_shift.shape[1], 4, -1
+                    )
+                ).unbind(dim=2)
 
-        (
-            audio_a2v_ca_scale,
-            audio_a2v_ca_shift,
-            audio_v2a_ca_scale,
-            audio_v2a_ca_shift,
-        ) = [t.squeeze(2) for t in audio_ca_scale_shift_table]
-        v2a_gate = audio_ca_gate[0].squeeze(2)
+                (
+                    audio_a2v_ca_scale,
+                    audio_a2v_ca_shift,
+                    audio_v2a_ca_scale,
+                    audio_v2a_ca_shift,
+                ) = [t.squeeze(2) for t in audio_ca_scale_shift_table]
+
+        if video_dual_mod is None:
+            video_dual_mod = _ltx2_try_fused_rmsnorm_dual_modulate(
+                hidden_states,
+                video_a2v_ca_scale,
+                video_a2v_ca_shift,
+                video_v2a_ca_scale,
+                video_v2a_ca_shift,
+                self.norm_eps,
+            )
+        if video_dual_mod is None:
+            norm_hidden_states = rms_norm(hidden_states, self.norm_eps)
+            mod_norm_hidden_states_a2v = _ltx2_modulate(
+                norm_hidden_states, video_a2v_ca_scale, video_a2v_ca_shift
+            )
+            mod_norm_hidden_states_v2a = _ltx2_modulate(
+                norm_hidden_states, video_v2a_ca_scale, video_v2a_ca_shift
+            )
+        else:
+            mod_norm_hidden_states_a2v, mod_norm_hidden_states_v2a = video_dual_mod
+
+        if audio_dual_mod is None:
+            audio_dual_mod = _ltx2_try_fused_rmsnorm_dual_modulate(
+                audio_hidden_states,
+                audio_a2v_ca_scale,
+                audio_a2v_ca_shift,
+                audio_v2a_ca_scale,
+                audio_v2a_ca_shift,
+                self.norm_eps,
+            )
+        if audio_dual_mod is None:
+            norm_audio_hidden_states = rms_norm(audio_hidden_states, self.norm_eps)
+            mod_norm_audio_hidden_states_a2v = _ltx2_modulate(
+                norm_audio_hidden_states, audio_a2v_ca_scale, audio_a2v_ca_shift
+            )
+            mod_norm_audio_hidden_states_v2a = _ltx2_modulate(
+                norm_audio_hidden_states, audio_v2a_ca_scale, audio_v2a_ca_shift
+            )
+        else:
+            (
+                mod_norm_audio_hidden_states_a2v,
+                mod_norm_audio_hidden_states_v2a,
+            ) = audio_dual_mod
 
         # A2V
-        mod_norm_hidden_states = (
-            norm_hidden_states * (1 + video_a2v_ca_scale) + video_a2v_ca_shift
-        )
-        mod_norm_audio_hidden_states = (
-            norm_audio_hidden_states * (1 + audio_a2v_ca_scale) + audio_a2v_ca_shift
-        )
-
         if not skip_a2v_cross_attn:
             a2v_attn_hidden_states = self.audio_to_video_attn(
-                mod_norm_hidden_states,
-                context=mod_norm_audio_hidden_states,
+                mod_norm_hidden_states_a2v,
+                context=mod_norm_audio_hidden_states_a2v,
                 pe=ca_video_rotary_emb,
                 k_pe=ca_audio_rotary_emb,
                 mask=a2v_cross_attention_mask,
@@ -1190,20 +3253,14 @@ class LTX2TransformerBlock(nn.Module):
                 a2v_attn_hidden_states = (
                     a2v_attn_hidden_states * a2v_cross_attn_perturbation_mask
                 )
-            hidden_states = hidden_states + a2v_gate * a2v_attn_hidden_states
+        else:
+            a2v_attn_hidden_states = None
 
         # V2A
-        mod_norm_hidden_states = (
-            norm_hidden_states * (1 + video_v2a_ca_scale) + video_v2a_ca_shift
-        )
-        mod_norm_audio_hidden_states = (
-            norm_audio_hidden_states * (1 + audio_v2a_ca_scale) + audio_v2a_ca_shift
-        )
-
         if not skip_v2a_cross_attn:
             v2a_attn_hidden_states = self.video_to_audio_attn(
-                mod_norm_audio_hidden_states,
-                context=mod_norm_hidden_states,
+                mod_norm_audio_hidden_states_v2a,
+                context=mod_norm_hidden_states_v2a,
                 pe=ca_audio_rotary_emb,
                 k_pe=ca_video_rotary_emb,
                 mask=v2a_cross_attention_mask,
@@ -1213,27 +3270,93 @@ class LTX2TransformerBlock(nn.Module):
                 v2a_attn_hidden_states = (
                     v2a_attn_hidden_states * v2a_cross_attn_perturbation_mask
                 )
-            audio_hidden_states = (
-                audio_hidden_states + v2a_gate * v2a_attn_hidden_states
-            )
+        else:
+            v2a_attn_hidden_states = None
         # 4. Feedforward
-        vshift_mlp, vscale_mlp, vgate_mlp = self.get_ada_values(
-            self.scale_shift_table, batch_size, temb, slice(3, 6)
-        )
-        norm_hidden_states = (
-            rms_norm(hidden_states, self.norm_eps) * (1 + vscale_mlp) + vshift_mlp
-        )
+        if video_ada_gates is not None:
+            vshift_mlp = vscale_mlp = None
+            vgate_mlp = video_ada_gates[1]
+        elif video_ada_values is None:
+            vshift_mlp, vscale_mlp, vgate_mlp = self.get_ada_values(
+                self.scale_shift_table, batch_size, temb, slice(3, 6)
+            )
+        else:
+            vshift_mlp, vscale_mlp, vgate_mlp = video_ada_values[3:6]
+        if a2v_attn_hidden_states is None:
+            norm_hidden_states = None
+            if video_ada_gates is not None:
+                norm_hidden_states = _ltx2_try_fused_norm_ada_scale_shift(
+                    hidden_states,
+                    self.scale_shift_table,
+                    temb,
+                    3,
+                    4,
+                    self.norm_eps,
+                )
+            if norm_hidden_states is None:
+                if vscale_mlp is None or vshift_mlp is None:
+                    vshift_mlp, vscale_mlp, _ = self.get_ada_values(
+                        self.scale_shift_table, batch_size, temb, slice(3, 6)
+                    )
+                norm_hidden_states = _ltx2_norm_scale_shift(
+                    hidden_states, vscale_mlp, vshift_mlp, self.norm_eps
+                )
+        else:
+            video_mlp_residual_norm = None
+            if video_ada_gates is not None:
+                video_mlp_residual_norm = _ltx2_try_fused_residual_norm_ada_scale_shift(
+                    hidden_states,
+                    a2v_attn_hidden_states,
+                    a2v_gate,
+                    self.scale_shift_table,
+                    temb,
+                    3,
+                    4,
+                    self.norm_eps,
+                )
+            if video_mlp_residual_norm is None:
+                if vscale_mlp is None or vshift_mlp is None:
+                    vshift_mlp, vscale_mlp, _ = self.get_ada_values(
+                        self.scale_shift_table, batch_size, temb, slice(3, 6)
+                    )
+                norm_hidden_states, hidden_states = _ltx2_residual_norm_scale_shift(
+                    hidden_states,
+                    a2v_attn_hidden_states,
+                    a2v_gate,
+                    vscale_mlp,
+                    vshift_mlp,
+                    self.norm_eps,
+                )
+            else:
+                norm_hidden_states, hidden_states = video_mlp_residual_norm
         ff_output = self.ff(norm_hidden_states)
-        hidden_states = hidden_states + ff_output * vgate_mlp
+        hidden_states = _ltx2_residual_gate_add(hidden_states, ff_output, vgate_mlp)
 
-        ashift_mlp, ascale_mlp, agate_mlp = self.get_ada_values(
-            self.audio_scale_shift_table, batch_size, temb_audio, slice(3, 6)
-        )
-        norm_audio_hidden_states = (
-            rms_norm(audio_hidden_states, self.norm_eps) * (1 + ascale_mlp) + ashift_mlp
-        )
+        if audio_ada_values is None:
+            ashift_mlp, ascale_mlp, agate_mlp = self.get_ada_values(
+                self.audio_scale_shift_table, batch_size, temb_audio, slice(3, 6)
+            )
+        else:
+            ashift_mlp, ascale_mlp, agate_mlp = audio_ada_values[3:6]
+        if v2a_attn_hidden_states is None:
+            norm_audio_hidden_states = _ltx2_norm_scale_shift(
+                audio_hidden_states, ascale_mlp, ashift_mlp, self.norm_eps
+            )
+        else:
+            norm_audio_hidden_states, audio_hidden_states = (
+                _ltx2_residual_norm_scale_shift(
+                    audio_hidden_states,
+                    v2a_attn_hidden_states,
+                    v2a_gate,
+                    ascale_mlp,
+                    ashift_mlp,
+                    self.norm_eps,
+                )
+            )
         audio_ff_output = self.audio_ff(norm_audio_hidden_states)
-        audio_hidden_states = audio_hidden_states + audio_ff_output * agate_mlp
+        audio_hidden_states = _ltx2_residual_gate_add(
+            audio_hidden_states, audio_ff_output, agate_mlp
+        )
         return hidden_states, audio_hidden_states
 
 
@@ -1258,6 +3381,138 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         ):
             return timestep * float(self.timestep_scale_multiplier)
         return timestep
+
+    @staticmethod
+    def _ltx2_rope_cache_tensor_signature(
+        tensor: torch.Tensor | None,
+    ) -> tuple[object, ...] | None:
+        if tensor is None:
+            return None
+        return (
+            tensor.data_ptr(),
+            tuple(tensor.shape),
+            tuple(tensor.stride()),
+            tensor.dtype,
+            tensor.device,
+            getattr(tensor, "_version", 0),
+        )
+
+    def _ltx2_rope_cache_key(
+        self,
+        *,
+        video_coords: torch.Tensor,
+        audio_coords: torch.Tensor,
+        generated_video_coords: bool,
+        generated_audio_coords: bool,
+        batch_size: int,
+        num_frames: int,
+        height: int,
+        width: int,
+        fps: float,
+        audio_num_frames: int,
+        hidden_device: torch.device,
+        hidden_dtype: torch.dtype,
+        audio_device: torch.device,
+        audio_dtype: torch.dtype,
+    ) -> tuple[object, ...]:
+        video_sig = None if generated_video_coords else self._ltx2_rope_cache_tensor_signature(video_coords)
+        audio_sig = None if generated_audio_coords else self._ltx2_rope_cache_tensor_signature(audio_coords)
+        return (
+            id(self.rope),
+            id(self.audio_rope),
+            id(self.cross_attn_rope),
+            id(self.cross_attn_audio_rope),
+            bool(generated_video_coords),
+            bool(generated_audio_coords),
+            int(batch_size),
+            int(num_frames),
+            int(height),
+            int(width),
+            float(fps),
+            int(audio_num_frames),
+            str(hidden_device),
+            hidden_dtype,
+            str(audio_device),
+            audio_dtype,
+            video_sig,
+            audio_sig,
+        )
+
+    def _ltx2_get_rope_embeddings(
+        self,
+        *,
+        video_coords: torch.Tensor,
+        audio_coords: torch.Tensor,
+        generated_video_coords: bool,
+        generated_audio_coords: bool,
+        batch_size: int,
+        num_frames: int,
+        height: int,
+        width: int,
+        fps: float,
+        audio_num_frames: int,
+        hidden_device: torch.device,
+        hidden_dtype: torch.dtype,
+        audio_device: torch.device,
+        audio_dtype: torch.dtype,
+    ) -> tuple[
+        tuple[torch.Tensor, torch.Tensor],
+        tuple[torch.Tensor, torch.Tensor],
+        tuple[torch.Tensor, torch.Tensor],
+        tuple[torch.Tensor, torch.Tensor],
+    ]:
+        if _ltx2_cache_rope_emb_enabled():
+            key = self._ltx2_rope_cache_key(
+                video_coords=video_coords,
+                audio_coords=audio_coords,
+                generated_video_coords=generated_video_coords,
+                generated_audio_coords=generated_audio_coords,
+                batch_size=batch_size,
+                num_frames=num_frames,
+                height=height,
+                width=width,
+                fps=fps,
+                audio_num_frames=audio_num_frames,
+                hidden_device=hidden_device,
+                hidden_dtype=hidden_dtype,
+                audio_device=audio_device,
+                audio_dtype=audio_dtype,
+            )
+            cached = self._ltx2_rope_emb_cache.get(key)
+            if cached is not None:
+                return cached
+
+        video_rotary_emb = self.rope(
+            video_coords,
+            device=hidden_device,
+            out_dtype=hidden_dtype,
+        )
+        audio_rotary_emb = self.audio_rope(
+            audio_coords,
+            device=audio_device,
+            out_dtype=audio_dtype,
+        )
+        ca_video_rotary_emb = self.cross_attn_rope(
+            video_coords[:, 0:1, :],
+            device=hidden_device,
+            out_dtype=hidden_dtype,
+        )
+        ca_audio_rotary_emb = self.cross_attn_audio_rope(
+            audio_coords[:, 0:1, :],
+            device=audio_device,
+            out_dtype=audio_dtype,
+        )
+        value = (
+            video_rotary_emb,
+            audio_rotary_emb,
+            ca_video_rotary_emb,
+            ca_audio_rotary_emb,
+        )
+        if _ltx2_cache_rope_emb_enabled():
+            if len(self._ltx2_rope_emb_cache) >= 4:
+                self._ltx2_rope_emb_cache.clear()
+            self._ltx2_rope_emb_cache[key] = value
+        return value
 
     def _validate_tp_config(self, *, arch: LTX2ArchConfig, tp_size: int) -> None:
         """Validate TP-related dimension constraints (fail-fast)."""
@@ -1501,6 +3756,12 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         )
 
         self.cross_pe_max_pos = cross_attn_pos_embed_max_pos
+        self._ltx2_rope_emb_cache: dict[tuple[object, ...], tuple[
+            tuple[torch.Tensor, torch.Tensor],
+            tuple[torch.Tensor, torch.Tensor],
+            tuple[torch.Tensor, torch.Tensor],
+            tuple[torch.Tensor, torch.Tensor],
+        ]] = {}
 
         # 5. Transformer Blocks
         self.transformer_blocks = nn.ModuleList(
@@ -1615,6 +3876,8 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         audio_timestep: Optional[torch.LongTensor] = None,
         prompt_timestep: Optional[torch.Tensor] = None,
         audio_prompt_timestep: Optional[torch.Tensor] = None,
+        encoder_hidden_states_projected: bool = False,
+        audio_encoder_hidden_states_projected: bool = False,
         encoder_attention_mask: Optional[torch.Tensor] = None,
         audio_encoder_attention_mask: Optional[torch.Tensor] = None,
         num_frames: Optional[int] = None,
@@ -1633,6 +3896,7 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         disable_a2v_cross_attn: bool = False,
         disable_v2a_cross_attn: bool = False,
         audio_replicated_for_sp: bool = False,
+        share_block0_self_attn: bool = False,
         **kwargs,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
 
@@ -1654,6 +3918,8 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
                 f"{len(perturbation_configs)=} {batch_size=}."
             )
 
+        generated_video_coords = video_coords is None
+        generated_audio_coords = audio_coords is None
         if video_coords is None:
             # Wan-style SP-RoPE: when SP is enabled, each rank runs on its local
             # time shard but RoPE positions must be offset to global time.
@@ -1687,25 +3953,26 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
             video_coords, hidden_states.device, hidden_states.dtype
         )
         audio_coords = audio_coords.to(device=audio_hidden_states.device)
-        video_rotary_emb = self.rope(
-            video_coords,
-            device=hidden_states.device,
-            out_dtype=hidden_states.dtype,
-        )
-        audio_rotary_emb = self.audio_rope(
-            audio_coords,
-            device=audio_hidden_states.device,
-            out_dtype=audio_hidden_states.dtype,
-        )
-        ca_video_rotary_emb = self.cross_attn_rope(
-            video_coords[:, 0:1, :],
-            device=hidden_states.device,
-            out_dtype=hidden_states.dtype,
-        )
-        ca_audio_rotary_emb = self.cross_attn_audio_rope(
-            audio_coords[:, 0:1, :],
-            device=audio_hidden_states.device,
-            out_dtype=audio_hidden_states.dtype,
+        (
+            video_rotary_emb,
+            audio_rotary_emb,
+            ca_video_rotary_emb,
+            ca_audio_rotary_emb,
+        ) = self._ltx2_get_rope_embeddings(
+            video_coords=video_coords,
+            audio_coords=audio_coords,
+            generated_video_coords=generated_video_coords,
+            generated_audio_coords=generated_audio_coords,
+            batch_size=batch_size,
+            num_frames=int(num_frames),
+            height=int(height),
+            width=int(width),
+            fps=float(fps),
+            audio_num_frames=int(audio_num_frames),
+            hidden_device=hidden_states.device,
+            hidden_dtype=hidden_states.dtype,
+            audio_device=audio_hidden_states.device,
+            audio_dtype=audio_hidden_states.dtype,
         )
 
         # 2. Patchify input projections
@@ -1807,118 +4074,265 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         )
 
         # 4. Prepare prompt embeddings
-        if self.caption_projection is not None:
+        if self.caption_projection is not None and not encoder_hidden_states_projected:
             encoder_hidden_states = self.caption_projection(encoder_hidden_states)
-        if self.audio_caption_projection is not None:
+        if (
+            self.audio_caption_projection is not None
+            and not audio_encoder_hidden_states_projected
+        ):
             audio_encoder_hidden_states = self.audio_caption_projection(
                 audio_encoder_hidden_states
             )
         # 5. Run blocks
         skip_video_self_attn_blocks = set(skip_video_self_attn_blocks or ())
         skip_audio_self_attn_blocks = set(skip_audio_self_attn_blocks or ())
-        video_self_attn_perturbation_states = None
-        audio_self_attn_perturbation_states = None
-        a2v_cross_attn_perturbation_states = None
-        v2a_cross_attn_perturbation_states = None
-        if perturbation_configs is not None:
-            block_indices = tuple(
-                getattr(block, "idx", -1) for block in self.transformer_blocks
-            )
-            video_self_attn_perturbation_states = (
-                _ltx2_build_batched_perturbation_states(
-                    perturbation_configs,
-                    "skip_video_self_attn_blocks",
-                    block_indices,
-                    hidden_states,
-                )
-            )
-            audio_self_attn_perturbation_states = (
-                _ltx2_build_batched_perturbation_states(
-                    perturbation_configs,
-                    "skip_audio_self_attn_blocks",
-                    block_indices,
-                    audio_hidden_states,
-                )
-            )
-            a2v_cross_attn_perturbation_states = (
-                _ltx2_build_batched_perturbation_states(
-                    perturbation_configs,
-                    "skip_a2v_cross_attn",
-                    block_indices,
-                    hidden_states,
-                )
-            )
-            v2a_cross_attn_perturbation_states = (
-                _ltx2_build_batched_perturbation_states(
-                    perturbation_configs,
-                    "skip_v2a_cross_attn",
-                    block_indices,
-                    audio_hidden_states,
-                )
-            )
-        for block in self.transformer_blocks:
-            block_idx = getattr(block, "idx", -1)
-            video_self_attn_perturbation_mask = None
-            audio_self_attn_perturbation_mask = None
-            a2v_cross_attn_perturbation_mask = None
-            v2a_cross_attn_perturbation_mask = None
-            skip_video_self_attn = block_idx in skip_video_self_attn_blocks
-            skip_audio_self_attn = block_idx in skip_audio_self_attn_blocks
-            skip_a2v_cross_attn = disable_a2v_cross_attn
-            skip_v2a_cross_attn = disable_v2a_cross_attn
-            if perturbation_configs is not None:
-                if not skip_video_self_attn:
-                    assert video_self_attn_perturbation_states is not None
-                    state = video_self_attn_perturbation_states[block_idx]
-                    video_self_attn_perturbation_mask, skip_video_self_attn = state
-                if not skip_audio_self_attn:
-                    assert audio_self_attn_perturbation_states is not None
-                    state = audio_self_attn_perturbation_states[block_idx]
-                    audio_self_attn_perturbation_mask, skip_audio_self_attn = state
-                if not skip_a2v_cross_attn:
-                    assert a2v_cross_attn_perturbation_states is not None
-                    state = a2v_cross_attn_perturbation_states[block_idx]
-                    a2v_cross_attn_perturbation_mask, skip_a2v_cross_attn = state
-                if not skip_v2a_cross_attn:
-                    assert v2a_cross_attn_perturbation_states is not None
-                    state = v2a_cross_attn_perturbation_states[block_idx]
-                    v2a_cross_attn_perturbation_mask, skip_v2a_cross_attn = state
-            hidden_states, audio_hidden_states = block(
-                hidden_states,
-                audio_hidden_states,
+        block_indices = tuple(
+            getattr(block, "idx", -1) for block in self.transformer_blocks
+        )
+        full_perturbation_states = _ltx2_build_perturbation_state_maps(
+            perturbation_configs, block_indices, hidden_states, audio_hidden_states
+        )
+        (
+            video_self_attn_perturbation_states,
+            audio_self_attn_perturbation_states,
+            a2v_cross_attn_perturbation_states,
+            v2a_cross_attn_perturbation_states,
+        ) = full_perturbation_states
+
+        prefix_share_plan = _ltx2_guidance_prefix_share_plan(
+            perturbation_configs, block_indices, batch_size
+        )
+        prefix_share_expanded = False
+        if prefix_share_plan is not None:
+            (
+                prefix_first_skip_block,
+                prefix_keep_indices,
+                prefix_expand_indices,
+            ) = prefix_share_plan
+            full_block_inputs = (
                 encoder_hidden_states,
                 audio_encoder_hidden_states,
-                # Keep the first 4 args positional to stay compatible with cache-dit's
-                # LTX2 adapter, which treats `audio_hidden_states` as `encoder_hidden_states`
-                # under ForwardPattern.Pattern_0.
-                temb=temb,
-                temb_audio=temb_audio,
-                temb_prompt=temb_prompt,
-                temb_audio_prompt=temb_audio_prompt,
-                temb_ca_scale_shift=temb_ca_scale_shift,
-                temb_ca_audio_scale_shift=temb_ca_audio_scale_shift,
-                temb_ca_gate=temb_ca_gate,
-                temb_ca_audio_gate=temb_ca_audio_gate,
-                video_rotary_emb=video_rotary_emb,
-                audio_rotary_emb=audio_rotary_emb,
-                ca_video_rotary_emb=ca_video_rotary_emb,
-                ca_audio_rotary_emb=ca_audio_rotary_emb,
-                encoder_attention_mask=encoder_attention_mask,
-                audio_encoder_attention_mask=audio_encoder_attention_mask,
-                video_self_attention_mask=video_self_attention_mask,
-                audio_self_attention_mask=audio_self_attention_mask,
-                a2v_cross_attention_mask=a2v_cross_attention_mask,
-                v2a_cross_attention_mask=v2a_cross_attention_mask,
-                skip_video_self_attn=skip_video_self_attn,
-                skip_audio_self_attn=skip_audio_self_attn,
-                skip_a2v_cross_attn=skip_a2v_cross_attn,
-                skip_v2a_cross_attn=skip_v2a_cross_attn,
-                video_self_attn_perturbation_mask=video_self_attn_perturbation_mask,
-                audio_self_attn_perturbation_mask=audio_self_attn_perturbation_mask,
-                a2v_cross_attn_perturbation_mask=a2v_cross_attn_perturbation_mask,
-                v2a_cross_attn_perturbation_mask=v2a_cross_attn_perturbation_mask,
-                audio_replicated_for_sp=audio_replicated_for_sp,
+                temb,
+                temb_audio,
+                temb_prompt,
+                temb_audio_prompt,
+                temb_ca_scale_shift,
+                temb_ca_audio_scale_shift,
+                temb_ca_gate,
+                temb_ca_audio_gate,
+                video_rotary_emb,
+                audio_rotary_emb,
+                ca_video_rotary_emb,
+                ca_audio_rotary_emb,
+                encoder_attention_mask,
+                audio_encoder_attention_mask,
+                video_self_attention_mask,
+                audio_self_attention_mask,
+                a2v_cross_attention_mask,
+                v2a_cross_attention_mask,
             )
+            assert perturbation_configs is not None
+            prefix_perturbation_configs = tuple(
+                perturbation_configs[index] for index in prefix_keep_indices
+            )
+            prefix_perturbation_states = _ltx2_build_perturbation_state_maps(
+                prefix_perturbation_configs,
+                block_indices,
+                hidden_states,
+                audio_hidden_states,
+            )
+            hidden_states = _ltx2_index_batch_dim(
+                hidden_states, prefix_keep_indices, batch_size
+            )
+            audio_hidden_states = _ltx2_index_batch_dim(
+                audio_hidden_states, prefix_keep_indices, batch_size
+            )
+            encoder_hidden_states = _ltx2_index_batch_dim(
+                encoder_hidden_states, prefix_keep_indices, batch_size
+            )
+            audio_encoder_hidden_states = _ltx2_index_batch_dim(
+                audio_encoder_hidden_states, prefix_keep_indices, batch_size
+            )
+            temb = _ltx2_index_batch_dim(temb, prefix_keep_indices, batch_size)
+            temb_audio = _ltx2_index_batch_dim(
+                temb_audio, prefix_keep_indices, batch_size
+            )
+            temb_prompt = _ltx2_index_batch_dim(
+                temb_prompt, prefix_keep_indices, batch_size
+            )
+            temb_audio_prompt = _ltx2_index_batch_dim(
+                temb_audio_prompt, prefix_keep_indices, batch_size
+            )
+            temb_ca_scale_shift = _ltx2_index_batch_dim(
+                temb_ca_scale_shift, prefix_keep_indices, batch_size
+            )
+            temb_ca_audio_scale_shift = _ltx2_index_batch_dim(
+                temb_ca_audio_scale_shift, prefix_keep_indices, batch_size
+            )
+            temb_ca_gate = _ltx2_index_batch_dim(
+                temb_ca_gate, prefix_keep_indices, batch_size
+            )
+            temb_ca_audio_gate = _ltx2_index_batch_dim(
+                temb_ca_audio_gate, prefix_keep_indices, batch_size
+            )
+            video_rotary_emb = _ltx2_index_rotary_emb(
+                video_rotary_emb, prefix_keep_indices, batch_size
+            )
+            audio_rotary_emb = _ltx2_index_rotary_emb(
+                audio_rotary_emb, prefix_keep_indices, batch_size
+            )
+            ca_video_rotary_emb = _ltx2_index_rotary_emb(
+                ca_video_rotary_emb, prefix_keep_indices, batch_size
+            )
+            ca_audio_rotary_emb = _ltx2_index_rotary_emb(
+                ca_audio_rotary_emb, prefix_keep_indices, batch_size
+            )
+            encoder_attention_mask = _ltx2_index_batch_dim(
+                encoder_attention_mask, prefix_keep_indices, batch_size
+            )
+            audio_encoder_attention_mask = _ltx2_index_batch_dim(
+                audio_encoder_attention_mask, prefix_keep_indices, batch_size
+            )
+            video_self_attention_mask = _ltx2_index_batch_dim(
+                video_self_attention_mask, prefix_keep_indices, batch_size
+            )
+            audio_self_attention_mask = _ltx2_index_batch_dim(
+                audio_self_attention_mask, prefix_keep_indices, batch_size
+            )
+            a2v_cross_attention_mask = _ltx2_index_batch_dim(
+                a2v_cross_attention_mask, prefix_keep_indices, batch_size
+            )
+            v2a_cross_attention_mask = _ltx2_index_batch_dim(
+                v2a_cross_attention_mask, prefix_keep_indices, batch_size
+            )
+            (
+                video_self_attn_perturbation_states,
+                audio_self_attn_perturbation_states,
+                a2v_cross_attn_perturbation_states,
+                v2a_cross_attn_perturbation_states,
+            ) = prefix_perturbation_states
+        else:
+            prefix_first_skip_block = -1
+            prefix_keep_indices = ()
+            prefix_expand_indices = ()
+            full_block_inputs = None
+
+        profile_token = _ltx2_push_profile_context(
+            getattr(self, "_sgl_ltx2_profile_phase", "unknown"),
+            getattr(self, "_sgl_ltx2_profile_step", "unknown"),
+        )
+        try:
+            for block in self.transformer_blocks:
+                block_idx = getattr(block, "idx", -1)
+                if (
+                    prefix_share_plan is not None
+                    and not prefix_share_expanded
+                    and block_idx >= prefix_first_skip_block
+                ):
+                    hidden_states = _ltx2_index_batch_dim(
+                        hidden_states, prefix_expand_indices, len(prefix_keep_indices)
+                    )
+                    audio_hidden_states = _ltx2_index_batch_dim(
+                        audio_hidden_states,
+                        prefix_expand_indices,
+                        len(prefix_keep_indices),
+                    )
+                    assert full_block_inputs is not None
+                    (
+                        encoder_hidden_states,
+                        audio_encoder_hidden_states,
+                        temb,
+                        temb_audio,
+                        temb_prompt,
+                        temb_audio_prompt,
+                        temb_ca_scale_shift,
+                        temb_ca_audio_scale_shift,
+                        temb_ca_gate,
+                        temb_ca_audio_gate,
+                        video_rotary_emb,
+                        audio_rotary_emb,
+                        ca_video_rotary_emb,
+                        ca_audio_rotary_emb,
+                        encoder_attention_mask,
+                        audio_encoder_attention_mask,
+                        video_self_attention_mask,
+                        audio_self_attention_mask,
+                        a2v_cross_attention_mask,
+                        v2a_cross_attention_mask,
+                    ) = full_block_inputs
+                    (
+                        video_self_attn_perturbation_states,
+                        audio_self_attn_perturbation_states,
+                        a2v_cross_attn_perturbation_states,
+                        v2a_cross_attn_perturbation_states,
+                    ) = full_perturbation_states
+                    prefix_share_expanded = True
+
+                video_self_attn_perturbation_mask = None
+                audio_self_attn_perturbation_mask = None
+                a2v_cross_attn_perturbation_mask = None
+                v2a_cross_attn_perturbation_mask = None
+                skip_video_self_attn = block_idx in skip_video_self_attn_blocks
+                skip_audio_self_attn = block_idx in skip_audio_self_attn_blocks
+                skip_a2v_cross_attn = disable_a2v_cross_attn
+                skip_v2a_cross_attn = disable_v2a_cross_attn
+                if perturbation_configs is not None:
+                    if not skip_video_self_attn:
+                        assert video_self_attn_perturbation_states is not None
+                        state = video_self_attn_perturbation_states[block_idx]
+                        video_self_attn_perturbation_mask, skip_video_self_attn = state
+                    if not skip_audio_self_attn:
+                        assert audio_self_attn_perturbation_states is not None
+                        state = audio_self_attn_perturbation_states[block_idx]
+                        audio_self_attn_perturbation_mask, skip_audio_self_attn = state
+                    if not skip_a2v_cross_attn:
+                        assert a2v_cross_attn_perturbation_states is not None
+                        state = a2v_cross_attn_perturbation_states[block_idx]
+                        a2v_cross_attn_perturbation_mask, skip_a2v_cross_attn = state
+                    if not skip_v2a_cross_attn:
+                        assert v2a_cross_attn_perturbation_states is not None
+                        state = v2a_cross_attn_perturbation_states[block_idx]
+                        v2a_cross_attn_perturbation_mask, skip_v2a_cross_attn = state
+                with _ltx2_record_function(f"ltx2_dit_block::{block_idx}"):
+                    hidden_states, audio_hidden_states = block(
+                        hidden_states,
+                        audio_hidden_states,
+                        encoder_hidden_states,
+                        audio_encoder_hidden_states,
+                        # Keep the first 4 args positional to stay compatible with cache-dit's
+                        # LTX2 adapter, which treats `audio_hidden_states` as `encoder_hidden_states`
+                        # under ForwardPattern.Pattern_0.
+                        temb=temb,
+                        temb_audio=temb_audio,
+                        temb_prompt=temb_prompt,
+                        temb_audio_prompt=temb_audio_prompt,
+                        temb_ca_scale_shift=temb_ca_scale_shift,
+                        temb_ca_audio_scale_shift=temb_ca_audio_scale_shift,
+                        temb_ca_gate=temb_ca_gate,
+                        temb_ca_audio_gate=temb_ca_audio_gate,
+                        video_rotary_emb=video_rotary_emb,
+                        audio_rotary_emb=audio_rotary_emb,
+                        ca_video_rotary_emb=ca_video_rotary_emb,
+                        ca_audio_rotary_emb=ca_audio_rotary_emb,
+                        encoder_attention_mask=encoder_attention_mask,
+                        audio_encoder_attention_mask=audio_encoder_attention_mask,
+                        video_self_attention_mask=video_self_attention_mask,
+                        audio_self_attention_mask=audio_self_attention_mask,
+                        a2v_cross_attention_mask=a2v_cross_attention_mask,
+                        v2a_cross_attention_mask=v2a_cross_attention_mask,
+                        skip_video_self_attn=skip_video_self_attn,
+                        skip_audio_self_attn=skip_audio_self_attn,
+                        skip_a2v_cross_attn=skip_a2v_cross_attn,
+                        skip_v2a_cross_attn=skip_v2a_cross_attn,
+                        video_self_attn_perturbation_mask=video_self_attn_perturbation_mask,
+                        audio_self_attn_perturbation_mask=audio_self_attn_perturbation_mask,
+                        a2v_cross_attn_perturbation_mask=a2v_cross_attn_perturbation_mask,
+                        v2a_cross_attn_perturbation_mask=v2a_cross_attn_perturbation_mask,
+                        audio_replicated_for_sp=audio_replicated_for_sp,
+                        share_block0_self_attn=share_block0_self_attn,
+                    )
+        finally:
+            _ltx2_pop_profile_context(profile_token)
 
         # 6. Output layers
         # Video
