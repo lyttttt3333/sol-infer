@@ -13,6 +13,9 @@ from sglang.multimodal_gen.runtime.loader.transformer_load_utils import (
     resolve_transformer_quant_load_spec,
     resolve_transformer_safetensors_to_load,
 )
+from sglang.multimodal_gen.runtime.managers.memory_managers.layerwise_offload_components import (
+    is_dit_component_name,
+)
 from sglang.multimodal_gen.runtime.loader.utils import _normalize_component_type
 from sglang.multimodal_gen.runtime.models.registry import ModelRegistry
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
@@ -57,12 +60,43 @@ class TransformerLoader(ComponentLoader):
     component_names = ["transformer", "audio_dit", "video_dit"]
     expected_library = "diffusers"
 
+    def customized_load_kwargs_for_component(
+        self, server_args: ServerArgs, component_name: str
+    ) -> dict[str, bool]:
+        if (
+            server_args.is_dit_layerwise_offload_selected
+            and is_dit_component_name(component_name)
+        ) or ComponentLoader._is_component_set_as_layerwise_load(
+            server_args,
+            component_name,
+        ):
+            logger.info(
+                "Loading %s on CPU first because it is selected for layerwise offload",
+                component_name,
+            )
+            return {"cpu_offload_flag": True}
+        return {}
+
     def load_customized(
-        self, component_model_path: str, server_args: ServerArgs, component_name: str
+        self,
+        component_model_path: str,
+        server_args: ServerArgs,
+        component_name: str,
+        cpu_offload_flag: bool | None = None,
     ):
         """Load the transformer based on the model path, and inference args."""
         component_server_args = _server_args_for_transformer_component(
             server_args, component_name
+        )
+        cpu_offload_for_load = (
+            cpu_offload_flag
+            if cpu_offload_flag is not None
+            else component_server_args.dit_cpu_offload
+        )
+        load_device = (
+            torch.device("cpu")
+            if cpu_offload_flag and not component_server_args.use_fsdp_inference
+            else get_local_torch_device()
         )
 
         # 1. hf config
@@ -125,10 +159,10 @@ class TransformerLoader(ComponentLoader):
             model_cls=model_cls,
             init_params=init_params,
             weight_dir_list=safetensors_list,
-            device=get_local_torch_device(),
+            device=load_device,
             hsdp_replicate_dim=server_args.hsdp_replicate_dim,
             hsdp_shard_dim=server_args.hsdp_shard_dim,
-            cpu_offload=component_server_args.dit_cpu_offload,
+            cpu_offload=cpu_offload_for_load,
             pin_cpu_memory=component_server_args.pin_cpu_memory,
             fsdp_inference=component_server_args.use_fsdp_inference,
             param_dtype=quant_spec.param_dtype,

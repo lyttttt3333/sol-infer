@@ -386,7 +386,10 @@ class USPAttention(nn.Module):
                 raise RuntimeError(
                     f"Ring Attention is only supported for FlashAttention or SageAttention backends, "
                     f"but got {backend_enum.name}. "
-                    f"Please ensure your platform supports these backends."
+                    f"Please ensure your platform supports these backends. "
+                    f"If FlashAttention falls back to Torch SDPA on your GPU, use pure Ulysses SP "
+                    f"with --ulysses-degree equal to --sp-degree and --ring-degree 1, or select "
+                    f"a compatible SageAttention backend."
                 )
         impl_cls: Type["AttentionImpl"] = attn_backend.get_impl_cls()
         self.allow_cudnn_sdp = bool(extra_impl_args.get("allow_cudnn_sdp", False))

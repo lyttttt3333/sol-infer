@@ -62,3 +62,12 @@ class LTXVideoVAEArchConfig(VAEArchConfig):
 @dataclass
 class LTXVideoVAEConfig(VAEConfig):
     arch_config: LTXVideoVAEArchConfig = field(default_factory=LTXVideoVAEArchConfig)
+
+    # Match the runtime defaults in AutoencoderKLLTX2Video while still allowing
+    # CLI/config overrides to be forwarded to enable_tiling().
+    tile_sample_min_height: int = 512
+    tile_sample_min_width: int = 512
+    tile_sample_min_num_frames: int = 16
+    tile_sample_stride_height: int = 448
+    tile_sample_stride_width: int = 448
+    tile_sample_stride_num_frames: int = 8

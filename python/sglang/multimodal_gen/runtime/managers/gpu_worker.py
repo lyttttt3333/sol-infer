@@ -78,6 +78,9 @@ OFFLOAD_DISABLE_RECOMMENDATION_ORDER = (
     "transformer",
 )
 
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+
 
 @dataclass
 class _ExpandedOutputParts:
@@ -141,6 +144,7 @@ class GPUWorker:
             ).to_tcp(),
             dist_timeout=self.server_args.dist_timeout,
         )
+        self._configure_cuda_matmul_precision()
 
         # set proc title
         if model_parallel_is_initialized():
@@ -181,6 +185,44 @@ class GPUWorker:
         logger.info(
             f"Worker {self.rank}: Initialized device, model, and distributed environment."
         )
+
+    def _configure_cuda_matmul_precision(self) -> None:
+        if not current_platform.is_cuda():
+            return
+
+        env_value = os.getenv(
+            "SGLANG_DISABLE_BF16_REDUCED_PRECISION_REDUCTION_FOR_SP"
+        )
+        if env_value is None:
+            disable_bf16_reduced_reduction = self.server_args.sp_degree > 1
+        else:
+            normalized = env_value.strip().lower()
+            if normalized in _TRUE_ENV_VALUES:
+                disable_bf16_reduced_reduction = True
+            elif normalized in _FALSE_ENV_VALUES:
+                disable_bf16_reduced_reduction = False
+            else:
+                logger.warning(
+                    "Ignoring invalid SGLANG_DISABLE_BF16_REDUCED_PRECISION_REDUCTION_FOR_SP=%r. "
+                    "Expected one of %s or %s.",
+                    env_value,
+                    sorted(_TRUE_ENV_VALUES),
+                    sorted(_FALSE_ENV_VALUES),
+                )
+                disable_bf16_reduced_reduction = self.server_args.sp_degree > 1
+
+        if not disable_bf16_reduced_reduction:
+            return
+
+        matmul_backend = torch.backends.cuda.matmul
+        if not hasattr(matmul_backend, "allow_bf16_reduced_precision_reduction"):
+            return
+
+        if matmul_backend.allow_bf16_reduced_precision_reduction:
+            matmul_backend.allow_bf16_reduced_precision_reduction = False
+            logger.info(
+                "Disabled CUDA BF16 reduced-precision reduction for SP shape-invariant matmul results."
+            )
 
     def do_mem_analysis(self, output_batch: OutputBatch):
         final_snapshot = capture_memory_snapshot()

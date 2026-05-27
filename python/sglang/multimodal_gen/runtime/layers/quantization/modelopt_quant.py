@@ -66,6 +66,28 @@ def _prepare_nvfp4_weight_bytes(
     return ((weight >> 4) | (weight << 4)).contiguous()
 
 
+def _nvfp4_scale_swizzled_to_linear(scales: torch.Tensor) -> torch.Tensor:
+    """Convert FlashInfer swizzled block scales back to row-major block scales."""
+    scale_ndim = scales.ndim
+    if scale_ndim == 2:
+        scales = scales.unsqueeze(0)
+    if scales.ndim != 3:
+        raise ValueError(f"Expected 2D or 3D NVFP4 scales, got {scales.ndim}D")
+
+    B, M, K = scales.shape
+    if M % 128 != 0 or K % 4 != 0:
+        raise ValueError(
+            "FlashInfer swizzled NVFP4 scales must be padded to "
+            f"[multiple of 128, multiple of 4], got {tuple(scales.shape)}"
+        )
+
+    scales_u8 = scales.contiguous().view(torch.uint8)
+    linear = scales_u8.reshape(B, M // 128, K // 4, 32, 4, 4)
+    linear = linear.permute(0, 1, 4, 3, 2, 5).contiguous().reshape(B, M, K)
+    linear = linear.view(torch.float8_e4m3fn)
+    return linear.squeeze(0) if scale_ndim == 2 else linear
+
+
 def _require_flashinfer():
     if flashinfer is None:
         raise RuntimeError(
@@ -202,7 +224,8 @@ class ModelOptFp4Config(ModelOptQuantConfig):
         exclude_modules: List[str] = None,
         packed_modules_mapping: Optional[Dict[str, List[str]]] = None,
         checkpoint_uses_packed_qkv: bool = False,
-        swap_weight_nibbles: bool = False,
+        swap_weight_nibbles: bool = True,
+        weight_scale_layout: str = "swizzled",
     ) -> None:
         super().__init__(exclude_modules, packed_modules_mapping)
         self.is_checkpoint_nvfp4_serialized = is_checkpoint_nvfp4_serialized
@@ -214,6 +237,13 @@ class ModelOptFp4Config(ModelOptQuantConfig):
         self.group_size = group_size
         self.checkpoint_uses_packed_qkv = checkpoint_uses_packed_qkv
         self.swap_weight_nibbles = swap_weight_nibbles
+        weight_scale_layout = weight_scale_layout.lower()
+        if weight_scale_layout not in {"swizzled", "linear"}:
+            raise ValueError(
+                "weight_scale_layout must be either 'swizzled' or 'linear', "
+                f"got {weight_scale_layout!r}"
+            )
+        self.weight_scale_layout = weight_scale_layout
 
     @classmethod
     def get_name(cls) -> str:
@@ -261,7 +291,8 @@ class ModelOptFp4Config(ModelOptQuantConfig):
     def from_config(cls, config: Dict[str, Any]) -> ModelOptFp4Config:
         group_size = None
         exclude_modules = []
-        swap_weight_nibbles = False
+        swap_weight_nibbles = True
+        weight_scale_layout = "swizzled"
 
         # Flat format (config.json quantization_config)
         quant_method = config.get("quant_algo")
@@ -273,10 +304,8 @@ class ModelOptFp4Config(ModelOptQuantConfig):
                     first_group = next(iter(config_groups.values()), {})
                     group_size = first_group.get("weights", {}).get("group_size")
             exclude_modules = config.get("ignore", [])
-            swap_weight_nibbles = config.get(
-                "swap_weight_nibbles",
-                config.get("checkpoint_uses_packed_qkv", False),
-            )
+            swap_weight_nibbles = config.get("swap_weight_nibbles", True)
+            weight_scale_layout = config.get("weight_scale_layout", "swizzled")
         else:
             # Nested format (hf_quant_config.json)
             try:
@@ -286,10 +315,11 @@ class ModelOptFp4Config(ModelOptQuantConfig):
                 exclude_modules = quant_config.get("exclude_modules", [])
                 swap_weight_nibbles = quant_config.get(
                     "swap_weight_nibbles",
-                    config.get(
-                        "swap_weight_nibbles",
-                        config.get("checkpoint_uses_packed_qkv", False),
-                    ),
+                    config.get("swap_weight_nibbles", True),
+                )
+                weight_scale_layout = quant_config.get(
+                    "weight_scale_layout",
+                    config.get("weight_scale_layout", "swizzled"),
                 )
             except (ValueError, KeyError):
                 raise ValueError("Cannot find 'quant_algo' in quantization config.")
@@ -311,6 +341,7 @@ class ModelOptFp4Config(ModelOptQuantConfig):
             packed_modules_mapping=config.get("packed_modules_mapping"),
             checkpoint_uses_packed_qkv=config.get("checkpoint_uses_packed_qkv", False),
             swap_weight_nibbles=swap_weight_nibbles,
+            weight_scale_layout=weight_scale_layout,
         )
 
     def get_quant_method(self, layer: torch.nn.Module, prefix: str):
@@ -500,9 +531,7 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
         w = layer.weight.data
         w_swapped = _prepare_nvfp4_weight_bytes(
             w,
-            swap_weight_nibbles=getattr(
-                self.quant_config, "swap_weight_nibbles", False
-            ),
+            swap_weight_nibbles=getattr(self.quant_config, "swap_weight_nibbles", True),
         )
 
         _, flashinfer_backend = _get_fp4_gemm_op()
@@ -511,6 +540,11 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
 
             weight, _ = pad_nvfp4_weight(w_swapped, n_alignment=128, k_alignment=0)
             scales = layer.weight_scale
+            if (
+                getattr(self.quant_config, "weight_scale_layout", "swizzled")
+                == "swizzled"
+            ):
+                scales = _nvfp4_scale_swizzled_to_linear(scales)
             if scales.shape[0] != weight.shape[0]:
                 pad_n = weight.shape[0] - scales.shape[0]
                 scales = torch.nn.functional.pad(scales, (0, 0, 0, pad_n))

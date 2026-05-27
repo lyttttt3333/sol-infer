@@ -47,7 +47,7 @@ class LTX2LoRASwitchStage(PipelineStage):
         self.phase = phase
 
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
-        if self.pipeline.should_skip_ltx2_lora_switch_stage():
+        if self.pipeline.should_skip_ltx2_lora_switch_stage(self.phase, batch):
             batch.extra["ltx2_phase"] = self.phase
             return batch
         self.pipeline.switch_lora_phase(self.phase, batch=batch)

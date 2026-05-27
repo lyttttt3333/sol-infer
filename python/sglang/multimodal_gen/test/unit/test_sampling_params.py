@@ -17,6 +17,7 @@ from sglang.multimodal_gen.configs.sample.flux import (
     Flux2SamplingParams,
     FluxSamplingParams,
 )
+from sglang.multimodal_gen.configs.sample.ltx_2 import LTX23HQSamplingParams
 from sglang.multimodal_gen.configs.sample.qwenimage import QwenImageSamplingParams
 from sglang.multimodal_gen.configs.sample.sampling_params import (
     SamplingParams,
@@ -97,6 +98,19 @@ class TestSamplingParamsSubclass(unittest.TestCase):
         self.assertEqual(FluxSamplingParams().guidance_scale, 3.5)
         self.assertEqual(Flux2SamplingParams().guidance_scale, 4.0)
         self.assertEqual(Flux2KleinSamplingParams().guidance_scale, 1.0)
+
+    def test_ltx23_hq_preserves_requested_frames_under_sp(self):
+        params = LTX23HQSamplingParams(num_frames=49)
+        server_args = SimpleNamespace(
+            pipeline_config=LTX2PipelineConfig(),
+            output_path=None,
+            num_gpus=2,
+            comfyui_mode=True,
+        )
+
+        params._adjust(server_args)
+
+        self.assertEqual(params.num_frames, 49)
 
     def test_diffusers_generic_calls_base_post_init(self):
         with self.assertRaises(AssertionError):
@@ -181,6 +195,27 @@ class TestSamplingParamsSubclass(unittest.TestCase):
             arch_config.video_decoder_config,
             {"_class_name": "AutoencoderKLLTX2Video"},
         )
+
+    def test_ltx2_mu_uses_diffusers_default_shift_anchor(self):
+        try:
+            from sglang.multimodal_gen.runtime.pipelines.ltx_2_pipeline import (
+                MAX_SHIFT_ANCHOR,
+                calculate_ltx2_shift,
+                prepare_ltx2_mu,
+            )
+        except ModuleNotFoundError as exc:
+            if exc.name == "diffusers":
+                self.skipTest("diffusers is not installed")
+            raise
+
+        batch = SimpleNamespace(num_frames=49, height=384, width=672)
+        server_args = SimpleNamespace(pipeline_config=LTX2PipelineConfig())
+
+        key, mu = prepare_ltx2_mu(batch, server_args)
+
+        self.assertEqual(key, "mu")
+        self.assertAlmostEqual(mu, calculate_ltx2_shift(MAX_SHIFT_ANCHOR))
+        self.assertNotAlmostEqual(mu, calculate_ltx2_shift(7 * 12 * 21))
 
 
 class TestSamplingParamsCliArgs(unittest.TestCase):

@@ -144,6 +144,7 @@ def _build_layer(
             is_checkpoint_nvfp4_serialized=True,
             group_size=BLOCK_SIZE,
             swap_weight_nibbles=True,
+            weight_scale_layout="linear",
         )
     )
     layer = torch.nn.Module()

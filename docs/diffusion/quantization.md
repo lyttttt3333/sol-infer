@@ -269,10 +269,48 @@ sglang generate \
   --save-output
 ```
 
+For local LTX-2 ModelOpt NVFP4 exports, build a mixed transformer override
+with the experimental LTX-2 BF16 fallback preset:
+
+```bash
+python -m sglang.multimodal_gen.tools.build_modelopt_nvfp4_transformer \
+  --base-transformer-dir /path/to/LTX-2/transformer \
+  --modelopt-hf-dir /tmp/modelopt_ltx2_nvfp4/hf \
+  --output-dir /tmp/ltx2_modelopt_nvfp4_sglang_transformer \
+  --pattern-preset ltx2-nvfp4
+```
+
+The same preset also accepts X0-style single-file LTX-2 safetensors exports:
+
+```bash
+python -m sglang.multimodal_gen.tools.build_modelopt_nvfp4_transformer \
+  --base-transformer-dir /path/to/ltx-2-19b-dev.safetensors \
+  --modelopt-hf-dir /path/to/ltx-2-19b-dev-fp4.safetensors \
+  --output-dir /tmp/ltx2_modelopt_nvfp4_sglang_transformer \
+  --pattern-preset ltx2-nvfp4
+```
+
+For two-stage LTX-2 pipelines, the stage transformers can also be mixed at
+runtime. If full stage-1 NVFP4 is slower for the target resolution or GPU,
+keep stage 1 in BF16 and use an NVFP4 override only for stage 2:
+
+```bash
+SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND=cutlass \
+sglang generate \
+  --model-path /path/to/LTX-2 \
+  --pipeline-class-name LTX2TwoStageHQPipeline \
+  --transformer-path /path/to/stage1-bf16-transformer \
+  --component_paths.transformer_2 /path/to/stage2-nvfp4-transformer \
+  ...
+```
+
 ### Notes
 
 - Use `--transformer-path` for mixed ModelOpt NVFP4 transformer repos or local
   directories that already include `config.json`.
+- The LTX-2 preset is a bring-up path for local exports rather than a published
+  validated checkpoint. Validate quality and runtime behavior before sharing a
+  checkpoint built with it.
 - Use `--transformer-weights-path` for raw NVFP4 exports, individual
   safetensors files, or repo layouts that should be treated as weights first.
 - For dual-transformer pipelines such as `Wan2.2-T2V-A14B-Diffusers`, the

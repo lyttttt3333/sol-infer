@@ -112,15 +112,9 @@ def calculate_ltx2_shift(
 def prepare_ltx2_mu(batch: Req, server_args: ServerArgs):
     if is_ltx23_native_variant(server_args.pipeline_config.vae_config.arch_config):
         return "mu", None
-    latent_num_frames = (int(batch.num_frames) - 1) // int(
-        server_args.pipeline_config.vae_temporal_compression
-    ) + 1
-    latent_height = int(batch.height) // int(
-        server_args.pipeline_config.vae_scale_factor
-    )
-    latent_width = int(batch.width) // int(server_args.pipeline_config.vae_scale_factor)
-    video_sequence_length = latent_num_frames * latent_height * latent_width
-    return "mu", calculate_ltx2_shift(video_sequence_length)
+    # Diffusers LTX-2 uses scheduler.config.max_image_seq_len as the shift
+    # anchor even when the requested latent token count is smaller.
+    return "mu", calculate_ltx2_shift(MAX_SHIFT_ANCHOR)
 
 
 def build_official_ltx2_sigmas(
@@ -412,7 +406,14 @@ class LTX2TwoStageResidencyStrategy(ComponentResidencyStrategy):
 
 
 class LTX2OriginalResidencyStrategy(LTX2TwoStageResidencyStrategy):
-    pass
+    def enter_phase(self, phase: str) -> bool:
+        if phase == "stage2":
+            self._ensure_on_gpu("transformer_2")
+        else:
+            self._ensure_on_gpu("transformer")
+        self.manager._sync_refinement_stage_transformer(phase)
+        self.manager._active_phase = phase
+        return True
 
 
 class LTX2ResidentResidencyStrategy(LTX2TwoStageResidencyStrategy):
@@ -760,7 +761,10 @@ class LTX2TwoStageResidencyController:
 
     def enter_phase(self, phase: str) -> bool:
         """Switch active two-stage DiT with minimal transfer/sync overhead."""
-        if not self.should_use_premerged:
+        if not (
+            self.should_use_premerged
+            or self.pipeline._use_explicit_stage2_transformer
+        ):
             return False
         if phase == self._active_phase:
             return True
@@ -788,11 +792,19 @@ class LTX2TwoStagePipeline(_BaseLTX2Pipeline):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._ltx2_residency = LTX2TwoStageResidencyController(self, self.server_args)
-        self._use_premerged_stage2_transformer = (
+        self._use_premerged_stage2_transformer = bool(
             self._ltx2_residency.should_use_premerged
         )
-        self._ltx2_residency.initialize()
+        self._use_dual_stage_transformers = (
+            self._use_premerged_stage2_transformer
+            or self._use_explicit_stage2_transformer
+        )
         if self._use_premerged_stage2_transformer:
+            self._ltx2_residency.initialize()
+        elif self._use_explicit_stage2_transformer:
+            self._ltx2_residency.strategy.initialize()
+
+        if self._use_dual_stage_transformers:
             self.component_residency_strategies["transformer"] = (
                 self._ltx2_residency.strategy
             )
@@ -846,6 +858,16 @@ class LTX2TwoStagePipeline(_BaseLTX2Pipeline):
         self._active_lora_phase = None
         self._active_lora_signature = None
         self._use_premerged_stage2_transformer = False
+        self._use_explicit_stage2_transformer = False
+        self._use_dual_stage_transformers = False
+
+        explicit_stage2_transformer_path = server_args.component_paths.get(
+            "transformer_2"
+        )
+        if explicit_stage2_transformer_path:
+            self._initialize_explicit_stage2_transformer(
+                server_args, explicit_stage2_transformer_path
+            )
 
     def _initialize_premerged_stage2_transformer(self, server_args: ServerArgs) -> None:
         transformer_path = self._resolve_component_path(
@@ -870,7 +892,51 @@ class LTX2TwoStagePipeline(_BaseLTX2Pipeline):
             merge_weights=True,
         )
 
-    def should_skip_ltx2_lora_switch_stage(self) -> bool:
+    def _initialize_explicit_stage2_transformer(
+        self, server_args: ServerArgs, transformer_path: str
+    ) -> None:
+        module, memory_usage = PipelineComponentLoader.load_component(
+            component_name="transformer_2",
+            component_model_path=transformer_path,
+            transformers_or_diffusers="diffusers",
+            server_args=server_args,
+        )
+        self.modules["transformer_2"] = module
+        self.memory_usages["transformer_2"] = memory_usage
+        self._use_explicit_stage2_transformer = True
+        self._use_dual_stage_transformers = True
+        logger.info(
+            "Using explicit LTX-2 stage-2 transformer from %s; "
+            "runtime distilled LoRA switching will be skipped for stage 2.",
+            transformer_path,
+        )
+
+    def should_skip_ltx2_lora_switch_stage(
+        self, phase: str | None = None, batch: Req | None = None
+    ) -> bool:
+        if self._use_explicit_stage2_transformer:
+            if phase == "stage2":
+                distilled_lora_strength = self._get_stage_distilled_lora_strength(
+                    phase, batch
+                )
+                if (
+                    distilled_lora_strength
+                    != self.STAGE_2_DISTILLED_LORA_STRENGTH
+                ):
+                    raise ValueError(
+                        "Explicit transformer_2 is assumed to already include the "
+                        "default stage-2 distilled LoRA. Per-request stage-2 "
+                        "distilled LoRA strength overrides are not supported in "
+                        "this mode."
+                    )
+                return True
+            if phase == "stage1":
+                return (
+                    self._stage1_lora_path is None
+                    and self._get_stage_distilled_lora_strength(phase, batch) == 0.0
+                )
+            return self._stage1_lora_path is None
+
         return self._use_premerged_stage2_transformer and self._ltx2_residency.mode in (
             "snapshot",
             "resident",
@@ -956,6 +1022,17 @@ class LTX2TwoStagePipeline(_BaseLTX2Pipeline):
         if phase_signature == self._active_lora_signature:
             return
 
+        if (
+            self._use_explicit_stage2_transformer
+            and self.should_skip_ltx2_lora_switch_stage(phase, batch)
+        ):
+            self._ltx2_residency.enter_phase(phase)
+            if phase == "stage1":
+                self.deactivate_lora_weights(target="transformer")
+            self._active_lora_phase = phase
+            self._active_lora_signature = phase_signature
+            return
+
         if self._ltx2_residency.enter_phase(
             phase
         ) and self._can_short_circuit_lora_switch(phase, batch):
@@ -1025,7 +1102,9 @@ class LTX2TwoStagePipeline(_BaseLTX2Pipeline):
                     "ltx2_image_encoding_stage2",
                 ),
                 LTX2RefinementStage(
-                    transformer=self.get_module("transformer"),
+                    transformer=self.get_module(
+                        "transformer_2", self.get_module("transformer")
+                    ),
                     scheduler=self.get_module("scheduler"),
                     distilled_sigmas=self.STAGE_2_DISTILLED_SIGMA_VALUES,
                     vae=self.get_module("vae"),

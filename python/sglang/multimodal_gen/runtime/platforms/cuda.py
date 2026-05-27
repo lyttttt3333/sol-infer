@@ -124,7 +124,7 @@ class CudaPlatformBase(Platform):
     @lru_cache(maxsize=1)
     def get_modelopt_flashinfer_fp4_backend(cls) -> str:
         backend = envs.SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND
-        default_backend = "cudnn" if cls.is_blackwell() else "auto"
+        default_backend = "trtllm" if cls.is_blackwell() else "auto"
         if backend is None:
             return default_backend
 
@@ -151,11 +151,10 @@ class CudaPlatformBase(Platform):
     @lru_cache(maxsize=1)
     def get_modelopt_fp4_gemm_op(cls) -> tuple[Callable | None, str | None]:
         requested_backend = envs.SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND
-        prefer_flashinfer = requested_backend is not None
+        prefer_flashinfer = requested_backend is not None or cls.is_blackwell()
 
-        # TODO: Remove this explicit FlashInfer preference once the sm100 CUTLASS
-        # LargeM dispatch grows a validated fallback for Blackwell NVFP4 shapes
-        # such as Wan2.2's large-M attention projections.
+        # Blackwell FP4 is fastest through FlashInfer's backend-specific kernels
+        # for the large diffusion GEMMs measured in LTX2 HQ inference.
         if prefer_flashinfer:
             try:
                 from flashinfer import mm_fp4 as flashinfer_mm_fp4

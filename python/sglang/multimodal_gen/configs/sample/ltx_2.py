@@ -49,6 +49,9 @@ class LTX23SamplingParams(LTX2SamplingParams):
 
     seed: int = 42
     generator_device: str = "cuda"
+    # LTX-2.3 SP shards packed latent frames and pads/trims internally, so
+    # changing the requested output frame count to match num_gpus is incorrect.
+    adjust_frames: bool = False
     guidance_scale: float = 3.0
     num_inference_steps: int = 30
 

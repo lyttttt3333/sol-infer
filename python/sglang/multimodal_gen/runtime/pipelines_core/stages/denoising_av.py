@@ -1,5 +1,4 @@
 import torch
-from diffusers.utils.torch_utils import randn_tensor
 
 from sglang.multimodal_gen.configs.pipeline_configs.ltx_2 import is_ltx23_native_variant
 from sglang.multimodal_gen.runtime.managers.memory_managers.component_manager import (
@@ -151,28 +150,16 @@ class LTX2RefinementStage(LTX2AVDenoisingStage):
             return StageParallelismType.MAIN_RANK_ONLY
         return StageParallelismType.REPLICATED
 
-    @staticmethod
+    @classmethod
     def _randn_like_with_batch_generators(
-        reference_tensor: torch.Tensor, batch: Req
+        cls,
+        reference_tensor: torch.Tensor,
+        batch: Req,
+        *,
+        is_audio: bool = False,
     ) -> torch.Tensor:
-        generator = getattr(batch, "generator", None)
-        if isinstance(generator, list):
-            bsz = int(reference_tensor.shape[0])
-            valid_generators = [g for g in generator if isinstance(g, torch.Generator)]
-            if len(valid_generators) == 1:
-                generator = valid_generators[0]
-            elif len(valid_generators) >= bsz:
-                generator = valid_generators[:bsz]
-            else:
-                generator = None
-        elif not isinstance(generator, torch.Generator):
-            generator = None
-
-        return randn_tensor(
-            reference_tensor.shape,
-            generator=generator,
-            device=reference_tensor.device,
-            dtype=reference_tensor.dtype,
+        return super()._randn_like_with_batch_generators(
+            reference_tensor, batch, is_audio=is_audio
         )
 
     @staticmethod
@@ -331,7 +318,7 @@ class LTX2RefinementStage(LTX2AVDenoisingStage):
                 ).to(batch.audio_latents.dtype)
             else:
                 audio_noise = self._randn_like_with_batch_generators(
-                    batch.audio_latents, batch
+                    batch.audio_latents, batch, is_audio=True
                 )
                 audio_scaled_mask = (
                     torch.ones_like(batch.audio_latents[..., :1], dtype=torch.float32)

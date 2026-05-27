@@ -558,6 +558,18 @@ class ServerArgs(DisaggArgsMixin):
                 raise ValueError(
                     "Ring Attention is only supported for flash attention or sage attention backend for now"
                 )
+            if (
+                current_platform.is_cuda()
+                and current_platform.is_sm120()
+                and self.attention_backend in (None, "fa")
+            ):
+                raise ValueError(
+                    "Ring Attention requires FlashAttention or SageAttention, but "
+                    "FlashAttention falls back to Torch SDPA on SM12.x GPUs in this build. "
+                    f"Use pure Ulysses SP instead, for example --sp-degree {self.sp_degree} "
+                    f"--ulysses-degree {self.sp_degree} --ring-degree 1, or install and select "
+                    "--attention-backend sage_attn if a compatible SageAttention backend is available."
+                )
             if self.attention_backend is None:
                 self.attention_backend = "fa"
                 logger.info(

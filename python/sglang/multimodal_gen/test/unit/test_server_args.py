@@ -156,6 +156,61 @@ class TestServerArgsPathExpansion(unittest.TestCase):
             server_args.component_attention_backends, {"text_encoder": "torch_sdpa"}
         )
 
+    def test_sm120_ring_attention_rejects_flash_attention_fallback(self):
+        common_kwargs = {
+            "model_path": "/data/my-model",
+            "performance_mode": "manual",
+            "num_gpus": 2,
+            "sp_degree": 2,
+            "ulysses_degree": 1,
+            "ring_degree": 2,
+            "enable_cfg_parallel": False,
+        }
+
+        with (
+            patch.object(
+                PipelineConfig, "from_kwargs", return_value=QwenImagePipelineConfig()
+            ),
+            patch(
+                "sglang.multimodal_gen.runtime.server_args.current_platform.is_cpu",
+                return_value=False,
+            ),
+            patch(
+                "sglang.multimodal_gen.runtime.server_args.current_platform.is_cuda",
+                return_value=True,
+            ),
+            patch(
+                "sglang.multimodal_gen.runtime.server_args.current_platform.is_mps",
+                return_value=False,
+            ),
+            patch(
+                "sglang.multimodal_gen.runtime.server_args.current_platform.is_sm120",
+                return_value=True,
+            ),
+            patch(
+                "sglang.multimodal_gen.runtime.server_args.current_platform.get_device_total_memory",
+                return_value=32 * 1024**3,
+            ),
+            patch(
+                "sglang.multimodal_gen.runtime.server_args.current_platform.get_available_gpu_memory",
+                return_value=32,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "FlashAttention falls back to Torch SDPA on SM12.x"
+            ):
+                ServerArgs.from_dict(common_kwargs)
+
+            with self.assertRaisesRegex(
+                ValueError, "FlashAttention falls back to Torch SDPA on SM12.x"
+            ):
+                ServerArgs.from_dict({**common_kwargs, "attention_backend": "fa"})
+
+            args = ServerArgs.from_dict(
+                {**common_kwargs, "attention_backend": "sage_attn"}
+            )
+            self.assertEqual(args.attention_backend, "sage_attn")
+
     def test_layerwise_offload_components_imply_layerwise(self):
         args = self._from_dict_without_model_resolution(
             {

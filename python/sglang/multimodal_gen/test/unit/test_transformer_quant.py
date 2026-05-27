@@ -7,10 +7,12 @@ import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
+from safetensors.torch import load_file, save_file
 
 partial_json_parser = types.ModuleType("partial_json_parser")
 partial_json_parser_core = types.ModuleType("partial_json_parser.core")
@@ -59,7 +61,12 @@ from sglang.multimodal_gen.runtime.loader.transformer_load_utils import (
 )
 from sglang.multimodal_gen.runtime.models.dits.flux import FluxSingleTransformerBlock
 from sglang.multimodal_gen.tools.build_modelopt_nvfp4_transformer import (
+    _ltx2_runtime_module_name_variants,
+    _matches_any_pattern,
+    _matches_any_module_variant,
+    _preset_patterns,
     _updated_quant_config,
+    build_modelopt_nvfp4_transformer,
 )
 
 
@@ -260,6 +267,31 @@ class TestTransformerQuantHelpers(unittest.TestCase):
 
         self.assertFalse(config.swap_weight_nibbles)
 
+    def test_modelopt_fp4_config_defaults_to_swizzled_weight_scales(self):
+        config = ModelOptFp4Config.from_config(
+            {
+                "quant_algo": "NVFP4",
+                "group_size": 16,
+                "ignore": [],
+            }
+        )
+
+        self.assertEqual(config.weight_scale_layout, "swizzled")
+
+    def test_modelopt_fp4_config_reads_weight_scale_layout(self):
+        config = ModelOptFp4Config.from_config(
+            {
+                "quantization": {
+                    "quant_algo": "NVFP4",
+                    "exclude_modules": [],
+                    "weight_scale_layout": "linear",
+                },
+                "config_groups": {"default": {"weights": {"group_size": 16}}},
+            }
+        )
+
+        self.assertEqual(config.weight_scale_layout, "linear")
+
     def test_builder_adds_diffusers_quant_type_for_nvfp4(self):
         updated = _updated_quant_config(
             {
@@ -278,6 +310,212 @@ class TestTransformerQuantHelpers(unittest.TestCase):
             updated["quantization_config"]["ignore"],
             ["single_transformer_blocks.*.proj_mlp*"],
         )
+
+    def test_ltx2_nvfp4_preset_matches_expected_fallback_modules(self):
+        patterns = _preset_patterns("ltx2-nvfp4")
+
+        self.assertTrue(_matches_any_pattern("patchify_proj", patterns))
+        self.assertTrue(_matches_any_pattern("audio_proj_out", patterns))
+        self.assertTrue(
+            _matches_any_pattern(
+                "adaln_single.emb.timestep_embedder.linear_1", patterns
+            )
+        )
+        self.assertTrue(_matches_any_pattern("audio_adaln_single.linear", patterns))
+        self.assertTrue(
+            _matches_any_pattern(
+                "av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_2",
+                patterns,
+            )
+        )
+        self.assertTrue(
+            _matches_any_pattern("transformer_blocks.0.attn1.to_q", patterns)
+        )
+        self.assertTrue(
+            _matches_any_pattern(
+                "transformer_blocks.43.audio_to_video_attn.to_out.0", patterns
+            )
+        )
+        self.assertTrue(
+            _matches_any_pattern("transformer_blocks.47.audio_ff.proj_out", patterns)
+        )
+        self.assertFalse(
+            _matches_any_pattern("transformer_blocks.1.attn1.to_q", patterns)
+        )
+        self.assertTrue(
+            _matches_any_module_variant(
+                "proj_in",
+                patterns,
+                pattern_preset="ltx2-nvfp4",
+            )
+        )
+        self.assertTrue(
+            _matches_any_module_variant(
+                "model.diffusion_model.time_embed.emb.timestep_embedder.linear_1",
+                patterns,
+                pattern_preset="ltx2-nvfp4",
+            )
+        )
+        self.assertTrue(
+            _matches_any_module_variant(
+                "transformer_blocks.47.audio_ff.net.2",
+                patterns,
+                pattern_preset="ltx2-nvfp4",
+            )
+        )
+
+    def test_ltx2_nvfp4_name_variants_include_runtime_module_names(self):
+        self.assertIn(
+            "patchify_proj",
+            _ltx2_runtime_module_name_variants("model.diffusion_model.proj_in"),
+        )
+        self.assertIn(
+            "adaln_single.emb.timestep_embedder.linear_2",
+            _ltx2_runtime_module_name_variants(
+                "time_embed.emb.timestep_embedder.linear_2"
+            ),
+        )
+        self.assertIn(
+            "transformer_blocks.43.ff.proj_in",
+            _ltx2_runtime_module_name_variants(
+                "transformer_blocks.43.ff.net.0.proj"
+            ),
+        )
+
+    def test_builder_accepts_ltx2_nvfp4_preset_in_quant_config(self):
+        updated = _updated_quant_config(
+            {
+                "quantization_config": {
+                    "quant_method": "modelopt",
+                    "quant_algo": "NVFP4",
+                    "ignore": [],
+                }
+            },
+            fallback_patterns=_preset_patterns("ltx2-nvfp4"),
+            swap_weight_nibbles=True,
+        )
+
+        ignore = updated["quantization_config"]["ignore"]
+        self.assertIn("patchify_proj", ignore)
+        self.assertIn("transformer_blocks.47.audio_ff.proj_out", ignore)
+        self.assertTrue(updated["quantization_config"]["swap_weight_nibbles"])
+        self.assertEqual(
+            updated["quantization_config"]["weight_scale_layout"], "swizzled"
+        )
+
+    def test_ltx2_nvfp4_builder_handles_x0_single_file_export(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            base = root / "base.safetensors"
+            source = root / "source-fp4.safetensors"
+            output_dir = root / "out"
+            patchify_key = "model.diffusion_model.proj_in"
+            runtime_patchify_key = "patchify_proj"
+            fallback_ff_key = (
+                "model.diffusion_model.transformer_blocks.47.audio_ff.net.2"
+            )
+            runtime_fallback_ff_key = (
+                "transformer_blocks.47.audio_ff.proj_out"
+            )
+            quantized_attn_key = (
+                "model.diffusion_model.transformer_blocks.1.attn1.to_q"
+            )
+            audio_vae_key = "audio_vae.decoder.conv_in.conv.weight"
+            metadata = {
+                "config": json.dumps(
+                    {"transformer": {"_class_name": "AVTransformer3DModel"}}
+                ),
+                "_quantization_metadata": json.dumps(
+                    {
+                        "format_version": "1.0",
+                        "layers": {
+                            patchify_key: {"format": "nvfp4"},
+                            quantized_attn_key: {"format": "nvfp4"},
+                        },
+                    }
+                ),
+            }
+
+            save_file(
+                {
+                    f"{patchify_key}.weight": torch.full(
+                        (2, 8), 1, dtype=torch.uint8
+                    ),
+                    f"{patchify_key}.weight_scale": torch.ones(
+                        (2, 1), dtype=torch.float32
+                    ),
+                    f"{fallback_ff_key}.weight": torch.full(
+                        (2, 8), 2, dtype=torch.uint8
+                    ),
+                    f"{fallback_ff_key}.weight_scale": torch.ones(
+                        (2, 1), dtype=torch.float32
+                    ),
+                    f"{quantized_attn_key}.weight": torch.full(
+                        (2, 8), 3, dtype=torch.uint8
+                    ),
+                    f"{quantized_attn_key}.weight_scale": torch.ones(
+                        (2, 1), dtype=torch.float32
+                    ),
+                    audio_vae_key: torch.ones((1, 1, 1, 1), dtype=torch.bfloat16),
+                },
+                source,
+                metadata=metadata,
+            )
+            save_file(
+                {
+                    f"{runtime_patchify_key}.weight": torch.full(
+                        (2, 16), 7, dtype=torch.bfloat16
+                    ),
+                    f"{runtime_fallback_ff_key}.weight": torch.full(
+                        (2, 16), 9, dtype=torch.bfloat16
+                    ),
+                    f"{quantized_attn_key}.weight": torch.full(
+                        (2, 16), 11, dtype=torch.bfloat16
+                    ),
+                },
+                base,
+            )
+
+            stats = build_modelopt_nvfp4_transformer(
+                base_transformer_dir=str(base),
+                modelopt_hf_dir=str(source),
+                output_dir=str(output_dir),
+                pattern_preset="ltx2-nvfp4",
+            )
+
+            config = json.loads((output_dir / "config.json").read_text())
+            quant_config = config["quantization_config"]
+            tensors = load_file(output_dir / source.name)
+            index = json.loads(
+                (output_dir / f"{source.stem}.safetensors.index.json").read_text()
+            )
+
+            self.assertEqual(config["_class_name"], "LTX2VideoTransformer3DModel")
+            self.assertEqual(quant_config["group_size"], 16)
+            self.assertIn("patchify_proj", quant_config["ignore"])
+            self.assertIn(
+                "transformer_blocks.47.audio_ff.proj_out",
+                quant_config["ignore"],
+            )
+            self.assertEqual(
+                tensors[f"{patchify_key}.weight"].dtype,
+                torch.bfloat16,
+            )
+            self.assertNotIn(f"{patchify_key}.weight_scale", tensors)
+            self.assertEqual(
+                tensors[f"{fallback_ff_key}.weight"].dtype,
+                torch.bfloat16,
+            )
+            self.assertNotIn(f"{fallback_ff_key}.weight_scale", tensors)
+            self.assertEqual(
+                tensors[f"{quantized_attn_key}.weight"].dtype,
+                torch.uint8,
+            )
+            self.assertNotIn(audio_vae_key, tensors)
+            self.assertNotIn(audio_vae_key, index["weight_map"])
+            self.assertEqual(stats["fallback_modules"], 2)
+            self.assertEqual(stats["replaced_tensors"], 2)
+            self.assertEqual(stats["removed_aux_tensors"], 2)
 
     @patch("sglang.multimodal_gen.runtime.layers.linear.get_group_rank", return_value=0)
     @patch("sglang.multimodal_gen.runtime.layers.linear.get_group_size", return_value=1)
