@@ -576,32 +576,35 @@ outputs/ltx23-selective-nvfp4-video-attn-ffn-stage2-lora-transformer-mat
 
 ### Sparse Kernel 行为
 
-默认从 sparse branch 接入的 `piecewise_attn` 做三步：
+从 sparse branch 接入的 `piecewise_attn` 原始路径做三步：
 
 1. 对 Q/K/V 按 block 做 chunk reduce，得到 `qc/kc/vc` 和 K variance proxy。
 2. 用 `qc @ kc` 加上 variance proxy 做 top-k block routing。
 3. 对 top-k block 做 exact attention；对未选中的 block，用 `kc/vc` centroid 做 piecewise 近似项。
 
-为了测速度上限，又加了两个默认可控开关：
+当前实现又保留了几个固定 shape 下的可控开关：
 
 ```bash
 SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER=false
 SGLANG_PIECEWISE_ATTN_ROUTE_MODE=score|local
+SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE=0|1
 ```
 
 - `approx_remainder=true`：保留 sparse branch 原始 piecewise 近似，即未选中 block 仍用 centroid 参与 softmax。
-- `approx_remainder=false`：更激进的 exact-selected-only sparse attention，只保留 top-k exact block，完全丢弃未选中 block。
+- `approx_remainder=false`：更激进的 exact-selected-only sparse attention，只保留选中的 exact block，完全丢弃未选中 block。
 - `route_mode=score`：继续使用 top-k score routing。
-- `route_mode=local`：实验性速度上限，直接选同位置 local block，不再计算 score/top-k routing；`b=32` 是当前最快实测，但它比 score routing 更偏离原 sparse branch 语义，因此不作为默认。
+- `route_mode=local`：直接选同位置 local block，不再计算 score/top-k routing；这是当前速度最快的路径，但它比 score routing 更偏离原 sparse branch 语义。
+- `SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE=1`：打开 selected FP4 attention `to_out + bias + gate` 融合。这个开关在 dense attention 上是负收益，但叠加 local sparse `b=32` 后变成正收益。
 
-当前保留的最快默认配置是：
+当前脚本默认保留的最快实测配置是：
 
 ```bash
 SGLANG_PIECEWISE_ATTN_SPARSITY=0.999
-SGLANG_PIECEWISE_ATTN_BLOCK_SIZE=128
+SGLANG_PIECEWISE_ATTN_BLOCK_SIZE=32
 SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER=false
-SGLANG_PIECEWISE_ATTN_ROUTE_MODE=score
+SGLANG_PIECEWISE_ATTN_ROUTE_MODE=local
 SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF=true
+SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE=1
 ```
 
 它只作用在 video self-attention (`attn1`) 且 Q/K/V 序列长度相同的路径；cross-attention 和 audio self-attention 回落到 dense FlashAttention/SDPA fallback。
@@ -617,26 +620,25 @@ SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF=true
 | exact-selected-only, `s=0.999,b=128` | `35.583s` | `29.465s` | `3.196s` | `2.758s` | `1.420x` | `1.667x` |
 | local exact, `s=0.999,b=16` | `35.821s` | `29.641s` | `3.153s` | `2.861s` | `1.410x` | `1.656x` |
 | local exact, `s=0.999,b=32` | `35.455s` | `29.423s` | `3.123s` | `2.749s` | `1.425x` | `1.673x` |
+| local exact + FP4 attn `to_out+bias+gate`, `s=0.999,b=32` | `34.861s` | `28.848s` | `3.051s` | `2.790s` | `1.449x` | `1.702x` |
 | local exact, `s=0.999,b=64` | `36.343s` | `30.071s` | `3.188s` | `2.898s` | `1.390x` | `1.633x` |
 | local exact, `s=0.999,b=128` | `36.101s` | `29.901s` | `3.182s` | `2.849s` | `1.399x` | `1.643x` |
 
-当前默认 best 证据文件：
+当前最快证据文件：
+
+```text
+outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-localexact-attnoutgate-s0999-b32-fp4biasgelu-projoutgate-pipeline/perf.json
+outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-localexact-attnoutgate-s0999-b32-fp4biasgelu-projoutgate-pipeline/summary.json
+```
+
+保守 score-routed exact-only 对照证据文件：
 
 ```text
 outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-exactonly-s0999-b128-fp4biasgelu-projoutgate-pipeline/perf.json
 outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-exactonly-s0999-b128-fp4biasgelu-projoutgate-pipeline/summary.json
 ```
 
-最快实验上限证据文件：
-
-```text
-outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-localexact-s0999-b32-fp4biasgelu-projoutgate-pipeline/perf.json
-outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-localexact-s0999-b32-fp4biasgelu-projoutgate-pipeline/summary.json
-```
-
-按 full measured total 算，默认 score-routed exact-only 配置是 `50.519 / 35.583 = 1.420x`，还没有达到“在 50s 基础上进一步 1.5x”的 `33.679s` 目标；距离目标还差 `1.903s`。按旧 BF16 fully optimized baseline `59.332s` 算是 `1.667x`。
-
-如果只看更激进的 local exact `b=32` 速度上限，`50.519 / 35.455 = 1.425x`，仍未达到 `33.679s`；距离目标还差 `1.776s`。
+按 full measured total 算，当前最快配置是 `50.519 / 34.861 = 1.449x`，还没有达到“在 50s 基础上进一步 1.5x”的 `33.679s` 目标；距离目标还差 `1.182s`。按旧 BF16 fully optimized baseline `59.332s` 算是 `1.702x`。
 
 decode-profile 严格口径也没有达到目标：
 
@@ -651,15 +653,16 @@ Sparse attention 的有损范围按 stage/layer 是：
 
 | Stage | Layer | 有损内容 |
 | --- | --- | --- |
-| Stage 1 denoise | `transformer_blocks.*.attn1` video self-attention | exact-selected-only sparse attention，只保留每个 query block 的 top-k KV block；当前 `s=0.999,b=128` 下 top-k 实际为 1。 |
+| Stage 1 denoise | `transformer_blocks.*.attn1` video self-attention | local exact sparse attention；当前最快 `s=0.999,b=32` 下每个 query block 只看同位置 local KV block，丢弃其他 KV block。 |
 | Stage 2 refine | `transformer_blocks.*.attn1` video self-attention | 同上。 |
 | Stage 1/2 | `attn2` prompt cross-attention、A2V/V2A cross-attention、audio self-attention | 当前默认不做 sparse，走 dense fallback。 |
 | Stage 1/2 | selected video `attn1/attn2` projection 和 FFN linear | 继续沿用 selective NVFP4，属于低精度量化误差。 |
+| Stage 1/2 | selected FP4 attention `to_out` projection | 当前 fastest 默认融合 `to_out + bias + gate`，属于 FP4 selected linear 低精度路径的一部分。 |
 
 因此当前最快 sparse 版本的算法误差来自两处：
 
 - selective NVFP4：weight/activation FP4 quantization。
-- exact-selected-only sparse attention：丢弃未选中 KV block，不再保留原始 piecewise centroid approximation。
+- local exact sparse attention：直接固定 local block，不再保留原始 piecewise centroid approximation，也不再做 score/top-k routing。
 
 ### 不保留的 Sparse 候选
 
@@ -670,8 +673,10 @@ Sparse attention 的有损范围按 stage/layer 是：
 | exact-only `b=256` | `37.853s` | block 太大，exact attention 计算增加，负收益。 |
 | exact-only `b=512` | 失败 | Triton 在 512x512 dot lowering 阶段失败，不保留。 |
 | local exact `b=16` | `35.821s` | 比 local exact `b=32` 慢。 |
-| local exact `b=32` | `35.455s` | 当前最快实验上限，但 local route 直接丢掉 score/top-k routing，比默认 score-routed exact-only 更激进，不作为默认。 |
+| local exact `b=32`, 不开 FP4 attn `to_out+bias+gate` | `35.455s` | 慢于当前 fastest `34.861s`。 |
 | local exact `b=64/b=128` | `36.343s` / `36.101s` | 慢于 local exact `b=32`。 |
+| cached-index local exact `b=32` | `35.586s` | 固定 shape 下缓存 block index 反而慢于动态生成。 |
+| local-only custom forward kernel `b=32` | `35.834s` | 去掉 indices/lse 通路后仍慢于当前 Triton exact sparse kernel。 |
 
 
 ## 不计入提升或被拒绝的候选

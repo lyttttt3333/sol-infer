@@ -37,15 +37,15 @@ export SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND="${SGLANG_DIFFUSION_FLASHINF
 export SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND="${SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND:-flashinfer}"
 export SGLANG_LTX2_FP4_FUSED_PROJ_IN_BIAS_GELU="${SGLANG_LTX2_FP4_FUSED_PROJ_IN_BIAS_GELU:-1}"
 export SGLANG_LTX2_FP4_FUSED_PROJ_OUT_BIAS_GATE="${SGLANG_LTX2_FP4_FUSED_PROJ_OUT_BIAS_GATE:-1}"
-export SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE="${SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE:-0}"
+export SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE="${SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE:-1}"
 export SGLANG_PIECEWISE_ATTN_SPARSITY="${SGLANG_PIECEWISE_ATTN_SPARSITY:-0.999}"
-export SGLANG_PIECEWISE_ATTN_BLOCK_SIZE="${SGLANG_PIECEWISE_ATTN_BLOCK_SIZE:-128}"
+export SGLANG_PIECEWISE_ATTN_BLOCK_SIZE="${SGLANG_PIECEWISE_ATTN_BLOCK_SIZE:-32}"
 export SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF="${SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF:-true}"
 export SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER="${SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER:-false}"
-export SGLANG_PIECEWISE_ATTN_ROUTE_MODE="${SGLANG_PIECEWISE_ATTN_ROUTE_MODE:-score}"
+export SGLANG_PIECEWISE_ATTN_ROUTE_MODE="${SGLANG_PIECEWISE_ATTN_ROUTE_MODE:-local}"
 
 PROMPT="${PROMPT:-A cinematic aerial shot of clouds moving across a mountain ridge at sunrise}"
-OUT_DIR="${OUT_DIR:-outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-exactonly-s0999-b128-fp4biasgelu-projoutgate-pipeline}"
+OUT_DIR="${OUT_DIR:-outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-localexact-attnoutgate-s0999-b32-fp4biasgelu-projoutgate-pipeline}"
 mkdir -p outputs/slurm "$OUT_DIR"
 
 if [[ "${SGLANG_DIFFUSION_LTX2_EVENT_PROFILE:-0}" == "1" ]]; then
@@ -56,7 +56,7 @@ fi
 
 .conda/ltx23/bin/python - <<'PY2'
 import json, os
-out_dir = os.environ.get('OUT_DIR', 'outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-exactonly-s0999-b128-fp4biasgelu-projoutgate-pipeline')
+out_dir = os.environ.get('OUT_DIR', 'outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-localexact-attnoutgate-s0999-b32-fp4biasgelu-projoutgate-pipeline')
 path = os.path.join(out_dir, 'perf.json')
 d = json.load(open(path))
 steps = {x['name']: x['duration_ms'] for x in d.get('steps', [])}
