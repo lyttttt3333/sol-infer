@@ -749,6 +749,7 @@ class LTX2TwoStageResidencyController:
         """
         return (
             self.mode != "original"
+            and not self.pipeline._use_explicit_stage2_transformer
             and self.pipeline._should_merge_stage2_distilled_lora(self.server_args)
             and self.pipeline._stage1_lora_path is None
         )

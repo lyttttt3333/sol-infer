@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     SGLANG_CACHE_DIT_SECONDARY_TS_ORDER: int = 1
     # model loading
     SGLANG_USE_RUNAI_MODEL_STREAMER: bool = True
+    SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND: str | None = None
     SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND: str | None = None
     SGLANG_DIFFUSION_VAE_CHANNELS_LAST_3D: bool = True
     SGLANG_USE_CUDA_HUNYUANVIDEO_GROUP_NORM_SILU: bool = False
@@ -281,6 +282,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # model loading
     "SGLANG_USE_RUNAI_MODEL_STREAMER": _lazy_bool(
         "SGLANG_USE_RUNAI_MODEL_STREAMER", "true"
+    ),
+    # FP4 activation quantization backend override for diffusion NVFP4.
+    # Supported values:
+    # - auto: default selection
+    # - flashinfer: FlashInfer fp4_quantize default backend
+    # - flashinfer_cuda: FlashInfer fp4_quantize backend=cuda
+    # - flashinfer_cute_dsl: FlashInfer fp4_quantize backend=cute-dsl
+    # - sgl_kernel: sgl_kernel scaled_fp4_quant
+    "SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND": _lazy_str(
+        "SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND"
     ),
     # FlashInfer FP4 GEMM backend override for diffusion NVFP4.
     # Supported values:

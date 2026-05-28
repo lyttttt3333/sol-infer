@@ -517,6 +517,20 @@ def _resolve_quant_config(
         reverse_param_names_mapping=reverse_param_names_mapping_dict,
     )
     quant_config_name = _get_quant_config_name(quant_config)
+    if quant_config_name == "modelopt_fp4":
+        quantization_section = None
+        if isinstance(hf_config, dict):
+            quantization_section = hf_config.get("quantization_config") or hf_config.get(
+                "quantization"
+            )
+        if isinstance(quantization_section, dict) and quantization_section.get(
+            "ignore_is_authoritative", False
+        ):
+            logger.info(
+                "Using ModelOpt NVFP4 ignore list from config.json; skipping safetensors inference."
+            )
+            return quant_config
+
     inferred_nvfp4_config = None
     if quant_config is None or quant_config_name == "modelopt_fp4":
         fallback_group_size = None

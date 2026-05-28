@@ -106,19 +106,88 @@ class CudaPlatformBase(Platform):
     @classmethod
     @lru_cache(maxsize=1)
     def get_modelopt_fp4_quantize_op(cls) -> Callable | None:
-        try:
-            from flashinfer import fp4_quantize
+        requested_backend = envs.SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND
+        backend = (requested_backend or "auto").lower()
+        backend = {
+            "flashinfer_fp4_quantize": "flashinfer",
+            "flashinfer": "flashinfer",
+            "flashinfer_cuda": "flashinfer_cuda",
+            "cuda": "flashinfer_cuda",
+            "flashinfer_cute_dsl": "flashinfer_cute_dsl",
+            "cute-dsl": "flashinfer_cute_dsl",
+            "cute_dsl": "flashinfer_cute_dsl",
+            "sgl": "sgl_kernel",
+            "sglang": "sgl_kernel",
+            "sgl_kernel": "sgl_kernel",
+            "auto": "auto",
+        }.get(backend, backend)
+        if backend not in {"auto", "flashinfer", "flashinfer_cuda", "flashinfer_cute_dsl", "sgl_kernel"}:
+            logger.warning(
+                "Unsupported SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND=%r. "
+                "Falling back to auto.",
+                requested_backend,
+            )
+            backend = "auto"
 
-            return fp4_quantize
-        except ImportError:
-            pass
+        def get_flashinfer_quantize(quant_backend: str | None = None):
+            try:
+                from flashinfer import fp4_quantize
+            except ImportError:
+                return None
 
-        try:
-            from sgl_kernel import scaled_fp4_quant as fp4_quantize
+            if quant_backend is None:
+                return fp4_quantize
 
-            return fp4_quantize
-        except ImportError:
-            return None
+            def fp4_quantize_with_backend(input, global_scale):
+                return fp4_quantize(input, global_scale, backend=quant_backend)
+
+            return fp4_quantize_with_backend
+
+        def get_sgl_kernel_quantize():
+            try:
+                from sgl_kernel import scaled_fp4_quant as fp4_quantize
+
+                return fp4_quantize
+            except ImportError:
+                pass
+
+            try:
+                from sglang.jit_kernel.nvfp4 import scaled_fp4_quant as fp4_quantize
+
+                return fp4_quantize
+            except ImportError:
+                return None
+
+        if backend in {"flashinfer", "flashinfer_cuda", "flashinfer_cute_dsl"}:
+            quant_backend = {
+                "flashinfer": None,
+                "flashinfer_cuda": "cuda",
+                "flashinfer_cute_dsl": "cute-dsl",
+            }[backend]
+            op = get_flashinfer_quantize(quant_backend)
+            if op is not None:
+                return op
+            logger.warning(
+                "Requested SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND=%s "
+                "but flashinfer.fp4_quantize is unavailable. Falling back to sgl_kernel.",
+                backend,
+            )
+            return get_sgl_kernel_quantize()
+
+        if backend == "sgl_kernel":
+            op = get_sgl_kernel_quantize()
+            if op is not None:
+                return op
+            logger.warning(
+                "Requested SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND=sgl_kernel "
+                "but sgl_kernel.scaled_fp4_quant is unavailable. Falling back to FlashInfer."
+            )
+            return get_flashinfer_quantize()
+
+        op = get_flashinfer_quantize()
+        if op is not None:
+            return op
+        return get_sgl_kernel_quantize()
 
     @classmethod
     @lru_cache(maxsize=1)

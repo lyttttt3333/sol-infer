@@ -34,6 +34,10 @@ from sglang.multimodal_gen.runtime.layers.linear import (
 from sglang.multimodal_gen.runtime.layers.quantization.configs.base_config import (
     QuantizationConfig,
 )
+from sglang.multimodal_gen.runtime.layers.quantization.modelopt_quant import (
+    modelopt_fp4_apply_quantized_linear,
+    modelopt_fp4_quantize_activation,
+)
 from sglang.multimodal_gen.runtime.layers.visual_embedding import timestep_embedding
 from sglang.multimodal_gen.runtime.managers.memory_managers.layerwise_offload import (
     LayerwiseOffloadableModuleMixin,
@@ -69,6 +73,8 @@ _LTX2_FUSED_ADA_VALUES_ALL_RUNTIME_DISABLED = False
 _LTX2_FUSED_ADA_VALUES_ALL_WARNING_EMITTED = False
 _LTX2_FUSED_ADA_DIRECT_RUNTIME_DISABLED = False
 _LTX2_FUSED_ADA_DIRECT_WARNING_EMITTED = False
+_LTX2_FUSED_GELU_INPLACE_RUNTIME_DISABLED = False
+_LTX2_FUSED_GELU_INPLACE_WARNING_EMITTED = False
 _LTX2_FUSED_Q_GATE_RUNTIME_DISABLED = False
 _LTX2_FUSED_Q_GATE_WARNING_EMITTED = False
 _LTX2_COMPILED_GATE_TO_OUT = None
@@ -724,6 +730,14 @@ def _ltx2_fused_qkv_enabled() -> bool:
     return os.environ.get("SGLANG_LTX2_FUSED_QKV", "0") == "1"
 
 
+def _ltx2_fp4_shared_qkv_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FP4_SHARED_QKV", "0") == "1"
+
+
+def _ltx2_fp4_shared_q_gate_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FP4_SHARED_Q_GATE", "0") == "1"
+
+
 def _ltx2_fused_audio_qkvg_enabled() -> bool:
     return os.environ.get("SGLANG_LTX2_FUSED_AUDIO_QKVG", "0") == "1"
 
@@ -734,6 +748,22 @@ def _ltx2_fused_kv_enabled() -> bool:
 
 def _ltx2_fused_ffn_proj_in_gelu_enabled() -> bool:
     return os.environ.get("SGLANG_LTX2_FUSED_FFN_PROJ_IN_GELU", "0") == "1"
+
+
+def _ltx2_fused_gelu_inplace_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FUSED_GELU_INPLACE", "0") == "1"
+
+
+def _ltx2_fp4_fused_proj_in_bias_gelu_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FP4_FUSED_PROJ_IN_BIAS_GELU", "0") == "1"
+
+
+def _ltx2_fp4_fused_proj_out_bias_gate_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FP4_FUSED_PROJ_OUT_BIAS_GATE", "0") == "1"
+
+
+def _ltx2_fp4_fused_attn_to_out_bias_gate_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE", "0") == "1"
 
 
 def _ltx2_compile_gate_to_out_enabled() -> bool:
@@ -1002,6 +1032,17 @@ def _ltx2_disable_fused_ada_values_all(exc: Exception) -> None:
             exc,
         )
         _LTX2_FUSED_ADA_VALUES_ALL_WARNING_EMITTED = True
+
+
+def _ltx2_disable_fused_gelu_inplace(exc: Exception) -> None:
+    global _LTX2_FUSED_GELU_INPLACE_RUNTIME_DISABLED
+    global _LTX2_FUSED_GELU_INPLACE_WARNING_EMITTED
+    _LTX2_FUSED_GELU_INPLACE_RUNTIME_DISABLED = True
+    if not _LTX2_FUSED_GELU_INPLACE_WARNING_EMITTED:
+        logger.warning(
+            "Disabling LTX2 fused in-place GELU fast path after failure: %s", exc
+        )
+        _LTX2_FUSED_GELU_INPLACE_WARNING_EMITTED = True
 
 
 def _ltx2_disable_fused_q_gate(exc: Exception) -> None:
@@ -1622,6 +1663,69 @@ def _ltx2_residual_gate_add(
     return residual + x * gate
 
 
+def _ltx2_try_gelu_tanh_inplace(x: torch.Tensor) -> torch.Tensor | None:
+    if (
+        not _ltx2_fused_gelu_inplace_enabled()
+        or _LTX2_FUSED_GELU_INPLACE_RUNTIME_DISABLED
+        or not x.is_cuda
+        or x.dtype not in (torch.float16, torch.bfloat16)
+        or not x.is_contiguous()
+    ):
+        return None
+    try:
+        from sglang.jit_kernel.diffusion.triton.ltx2_gelu import (
+            ltx2_gelu_tanh_inplace,
+        )
+
+        with _ltx2_record_function("ltx2_fused_gelu_inplace::gelu_tanh"):
+            return ltx2_gelu_tanh_inplace(x)
+    except Exception as exc:
+        _ltx2_disable_fused_gelu_inplace(exc)
+        return None
+
+
+def _ltx2_try_fp4_fused_proj_in_bias_gelu(
+    x: torch.Tensor,
+    proj_in: nn.Module,
+) -> torch.Tensor | None:
+    if (
+        not _ltx2_fp4_fused_proj_in_bias_gelu_enabled()
+        or get_tp_world_size() != 1
+        or not x.is_cuda
+        or x.dtype not in (torch.float16, torch.bfloat16)
+        or x.ndim < 2
+        or x.stride(-1) != 1
+    ):
+        return None
+    base = _ltx2_linear_base_for_fusion(proj_in)
+    if base is None:
+        return None
+    if getattr(base, "gather_output", False) or getattr(base, "skip_bias_add", False):
+        return None
+    if base.quant_method.__class__.__name__ != "ModelOptFp4LinearMethod":
+        return None
+    bias = getattr(base, "bias", None)
+    if bias is None or bias.device != x.device or bias.dtype != x.dtype or bias.ndim != 1:
+        return None
+
+    try:
+        from sglang.jit_kernel.diffusion.triton.ltx2_gelu import (
+            ltx2_bias_gelu_tanh_inplace,
+        )
+
+        with _ltx2_record_function("ltx2_fp4_fused_proj_in_bias_gelu::linear"):
+            y = base.quant_method.apply(base, x, bias=None)
+        if y.shape[-1] != bias.shape[0] or not y.is_contiguous():
+            return None
+        with _ltx2_record_function("ltx2_fp4_fused_proj_in_bias_gelu::bias_gelu"):
+            return ltx2_bias_gelu_tanh_inplace(y, bias)
+    except Exception as exc:
+        logger.warning_once(
+            f"Disabling LTX2 FP4 fused proj_in+bias+GELU fast path: {exc}"
+        )
+        return None
+
+
 def _ltx2_try_fused_ffn_proj_in_gelu(
     x: torch.Tensor,
     proj_in: nn.Module,
@@ -2017,6 +2121,10 @@ class LTX2Attention(nn.Module):
         self.to_gate_logits: ColumnParallelLinear | None = None
         self._qkv_fused_cache: tuple[object, ...] | None = None
         self._qkv_fused_projection_disabled = False
+        self._fp4_shared_qkv_projection_disabled = False
+        self._fp4_shared_qkv_scale_checked = False
+        self._fp4_shared_q_gate_projection_disabled = False
+        self._fp4_shared_q_gate_scale_checked = False
         self._audio_qkvg_fused_cache: tuple[object, ...] | None = None
         self._audio_qkvg_fused_projection_disabled = False
         if self.apply_gated_attention:
@@ -2352,6 +2460,190 @@ class LTX2Attention(nn.Module):
             self._qkv_fused_cache = None
             return None
 
+    def _fp4_shared_qkv_scales_match(
+        self, to_q: nn.Module, to_k: nn.Module, to_v: nn.Module
+    ) -> bool:
+        if self._fp4_shared_qkv_scale_checked:
+            return True
+        scales = (
+            getattr(to_q, "input_scale_inv", None),
+            getattr(to_k, "input_scale_inv", None),
+            getattr(to_v, "input_scale_inv", None),
+        )
+        if any(scale is None or scale.numel() != 1 for scale in scales):
+            return False
+        try:
+            values = [float(scale.detach().cpu().item()) for scale in scales]
+        except Exception:
+            return False
+        if values[0] != values[1] or values[0] != values[2]:
+            return False
+        self._fp4_shared_qkv_scale_checked = True
+        return True
+
+    def _try_fp4_shared_qkv_projection(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        if (
+            not _ltx2_fp4_shared_qkv_enabled()
+            or self._fp4_shared_qkv_projection_disabled
+            or not x.is_cuda
+            or x.dtype not in (torch.float16, torch.bfloat16)
+            or x.shape[-1] != self.query_dim
+            or self.query_dim != self.context_dim
+        ):
+            return None
+        to_q = _ltx2_linear_base_for_fusion(self.to_q)
+        to_k = _ltx2_linear_base_for_fusion(self.to_k)
+        to_v = _ltx2_linear_base_for_fusion(self.to_v)
+        if to_q is None or to_k is None or to_v is None:
+            return None
+        if (
+            getattr(to_q, "gather_output", False)
+            or getattr(to_k, "gather_output", False)
+            or getattr(to_v, "gather_output", False)
+            or getattr(to_q, "skip_bias_add", False)
+            or getattr(to_k, "skip_bias_add", False)
+            or getattr(to_v, "skip_bias_add", False)
+        ):
+            return None
+        if (
+            to_q.quant_method.__class__.__name__ != "ModelOptFp4LinearMethod"
+            or to_k.quant_method.__class__.__name__ != "ModelOptFp4LinearMethod"
+            or to_v.quant_method.__class__.__name__ != "ModelOptFp4LinearMethod"
+        ):
+            return None
+        if not self._fp4_shared_qkv_scales_match(to_q, to_k, to_v):
+            self._fp4_shared_qkv_projection_disabled = True
+            return None
+
+        try:
+            with _ltx2_record_function("ltx2_fp4_shared_qkv::quantize"):
+                x_fp4, x_scale_interleaved, input_shape, output_dtype = (
+                    modelopt_fp4_quantize_activation(x, to_q.input_scale_inv)
+                )
+            with _ltx2_record_function("ltx2_fp4_shared_qkv::to_q"):
+                q = modelopt_fp4_apply_quantized_linear(
+                    to_q,
+                    x_fp4,
+                    x_scale_interleaved,
+                    input_shape,
+                    output_dtype,
+                    to_q.bias,
+                )
+            with _ltx2_record_function("ltx2_fp4_shared_qkv::to_k"):
+                k = modelopt_fp4_apply_quantized_linear(
+                    to_k,
+                    x_fp4,
+                    x_scale_interleaved,
+                    input_shape,
+                    output_dtype,
+                    to_k.bias,
+                )
+            with _ltx2_record_function("ltx2_fp4_shared_qkv::to_v"):
+                v = modelopt_fp4_apply_quantized_linear(
+                    to_v,
+                    x_fp4,
+                    x_scale_interleaved,
+                    input_shape,
+                    output_dtype,
+                    to_v.bias,
+                )
+            return q, k, v
+        except Exception as exc:
+            logger.warning_once(f"Disabling LTX2 FP4 shared QKV projection: {exc}")
+            self._fp4_shared_qkv_projection_disabled = True
+            return None
+
+    def _fp4_shared_q_gate_scales_match(
+        self, to_q: nn.Module, to_gate: nn.Module
+    ) -> bool:
+        if self._fp4_shared_q_gate_scale_checked:
+            return True
+        q_scale = getattr(to_q, "input_scale_inv", None)
+        gate_scale = getattr(to_gate, "input_scale_inv", None)
+        if (
+            q_scale is None
+            or gate_scale is None
+            or q_scale.numel() != 1
+            or gate_scale.numel() != 1
+        ):
+            return False
+        try:
+            q_value = float(q_scale.detach().cpu().item())
+            gate_value = float(gate_scale.detach().cpu().item())
+        except Exception:
+            return False
+        if q_value != gate_value:
+            return False
+        self._fp4_shared_q_gate_scale_checked = True
+        return True
+
+    def _try_fp4_shared_q_gate_projection(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if (
+            not _ltx2_fp4_shared_q_gate_enabled()
+            or self._fp4_shared_q_gate_projection_disabled
+            or self.to_gate_logits is None
+            or get_tp_world_size() != 1
+            or not x.is_cuda
+            or x.dtype not in (torch.float16, torch.bfloat16)
+            or x.shape[-1] != self.query_dim
+            or self.query_dim != 4096
+            or self.inner_dim != 4096
+            or self.local_heads != 32
+        ):
+            return None
+        to_q = _ltx2_linear_base_for_fusion(self.to_q)
+        to_gate = _ltx2_linear_base_for_fusion(self.to_gate_logits)
+        if to_q is None or to_gate is None:
+            return None
+        if (
+            getattr(to_q, "gather_output", False)
+            or getattr(to_gate, "gather_output", False)
+            or getattr(to_q, "skip_bias_add", False)
+            or getattr(to_gate, "skip_bias_add", False)
+        ):
+            return None
+        if (
+            to_q.quant_method.__class__.__name__ != "ModelOptFp4LinearMethod"
+            or to_gate.quant_method.__class__.__name__ != "ModelOptFp4LinearMethod"
+        ):
+            return None
+        if not self._fp4_shared_q_gate_scales_match(to_q, to_gate):
+            self._fp4_shared_q_gate_projection_disabled = True
+            return None
+
+        try:
+            with _ltx2_record_function("ltx2_fp4_shared_q_gate::quantize"):
+                x_fp4, x_scale_interleaved, input_shape, output_dtype = (
+                    modelopt_fp4_quantize_activation(x, to_q.input_scale_inv)
+                )
+            with _ltx2_record_function("ltx2_fp4_shared_q_gate::to_q"):
+                q = modelopt_fp4_apply_quantized_linear(
+                    to_q,
+                    x_fp4,
+                    x_scale_interleaved,
+                    input_shape,
+                    output_dtype,
+                    to_q.bias,
+                )
+            with _ltx2_record_function("ltx2_fp4_shared_q_gate::to_gate_logits"):
+                gate = modelopt_fp4_apply_quantized_linear(
+                    to_gate,
+                    x_fp4,
+                    x_scale_interleaved,
+                    input_shape,
+                    output_dtype,
+                    to_gate.bias,
+                )
+            return q, gate
+        except Exception as exc:
+            logger.warning_once(f"Disabling LTX2 FP4 shared q+gate projection: {exc}")
+            self._fp4_shared_q_gate_projection_disabled = True
+            return None
+
     def _try_fused_kv_projection(
         self, context: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor] | None:
@@ -2593,6 +2885,62 @@ class LTX2Attention(nn.Module):
             _ltx2_disable_compiled_gate_to_out(exc)
             return None
 
+    def _try_fp4_to_out_with_residual_gate(
+        self,
+        out_flat: torch.Tensor,
+        residual: torch.Tensor | None,
+        gate: torch.Tensor | None,
+    ) -> torch.Tensor | None:
+        if (
+            residual is None
+            or gate is None
+            or not _ltx2_fp4_fused_attn_to_out_bias_gate_enabled()
+            or get_tp_world_size() != 1
+            or not out_flat.is_cuda
+            or out_flat.dtype not in (torch.float16, torch.bfloat16)
+            or out_flat.ndim != 3
+            or residual.shape != out_flat.shape[:-1] + (self.query_dim,)
+            or residual.dtype != out_flat.dtype
+            or gate.dtype != out_flat.dtype
+            or not residual.is_contiguous()
+        ):
+            return None
+        to_out = _ltx2_linear_base_for_fusion(self.to_out[0])
+        if to_out is None:
+            return None
+        if (
+            not getattr(to_out, "input_is_parallel", False)
+            or getattr(to_out, "skip_bias_add", False)
+            or not getattr(to_out, "reduce_results", True)
+            or getattr(to_out, "tp_size", 1) != 1
+            or to_out.quant_method.__class__.__name__ != "ModelOptFp4LinearMethod"
+        ):
+            return None
+        bias = getattr(to_out, "bias", None)
+        if bias is None or bias.device != out_flat.device or bias.dtype != out_flat.dtype:
+            return None
+
+        try:
+            from sglang.jit_kernel.diffusion.triton.ltx2_gelu import (
+                ltx2_bias_residual_gate,
+            )
+
+            with _ltx2_record_function(
+                f"ltx2_fp4_fused_attn_to_out_bias_gate::{self.profile_prefix}.linear"
+            ):
+                update = to_out.quant_method.apply(to_out, out_flat, bias=None)
+            if not update.is_contiguous():
+                return None
+            with _ltx2_record_function(
+                f"ltx2_fp4_fused_attn_to_out_bias_gate::{self.profile_prefix}.epilogue"
+            ):
+                return ltx2_bias_residual_gate(update, residual, gate, bias)
+        except Exception as exc:
+            logger.warning_once(
+                f"Disabling LTX2 FP4 fused attn to_out+bias+gate fast path: {exc}"
+            )
+            return None
+
     def forward(self, *args, **kwargs) -> torch.Tensor:
         with _ltx2_record_function(f"ltx2_attention::{self.profile_prefix}"):
             return self._forward_impl(*args, **kwargs)
@@ -2609,6 +2957,8 @@ class LTX2Attention(nn.Module):
         skip_sequence_parallel_override: bool = False,
         gather_context_kv_for_sp: bool = False,
         gather_query_for_sp: bool = False,
+        output_residual: torch.Tensor | None = None,
+        output_gate: torch.Tensor | None = None,
     ) -> torch.Tensor:
         profile_prefix = self.profile_prefix
         gate_input = x
@@ -2625,7 +2975,9 @@ class LTX2Attention(nn.Module):
                 fused_audio_qkvg = self._try_fused_audio_qkvg_projection(x)
         if use_attention and context is None and fused_audio_qkvg is None:
             with _ltx2_record_function(f"ltx2_attention_proj::{profile_prefix}.qkv"):
-                fused_qkv = self._try_fused_qkv_projection(x)
+                fused_qkv = self._try_fp4_shared_qkv_projection(x)
+                if fused_qkv is None:
+                    fused_qkv = self._try_fused_qkv_projection(x)
         if fused_audio_qkvg is not None:
             q, k, v, fused_gate_logits = fused_audio_qkvg
         elif fused_qkv is None:
@@ -2651,7 +3003,9 @@ class LTX2Attention(nn.Module):
                     with _ltx2_record_function(
                         f"ltx2_attention_proj::{profile_prefix}.q_gate"
                     ):
-                        fused_q_gate = self._try_fused_q_gate_projection(x)
+                        fused_q_gate = self._try_fp4_shared_q_gate_projection(x)
+                        if fused_q_gate is None:
+                            fused_q_gate = self._try_fused_q_gate_projection(x)
                 if fused_q_gate is None:
                     with _ltx2_record_function(
                         f"ltx2_attention_proj::{profile_prefix}.to_q"
@@ -2811,6 +3165,10 @@ class LTX2Attention(nn.Module):
                     out, gate_logits
                 )
                 if compiled_gate_to_out is not None:
+                    if output_residual is not None and output_gate is not None:
+                        return _ltx2_residual_gate_add(
+                            output_residual, compiled_gate_to_out, output_gate
+                        )
                     return compiled_gate_to_out
                 b, t = out.shape[:2]
                 out = out.view(b, t, self.local_heads, self.dim_head)
@@ -2818,9 +3176,17 @@ class LTX2Attention(nn.Module):
                 out = out.view(b, t, self.local_heads * self.dim_head)
 
         out_flat = out.flatten(2)
+        fused_output_residual = self._try_fp4_to_out_with_residual_gate(
+            out_flat, output_residual, output_gate
+        )
+        if fused_output_residual is not None:
+            return fused_output_residual
+
         with _ltx2_record_function(f"ltx2_attention_proj::{profile_prefix}.to_out"):
             out_proj, _ = self.to_out[0](out_flat)
 
+        if output_residual is not None and output_gate is not None:
+            return _ltx2_residual_gate_add(output_residual, out_proj, output_gate)
         return out_proj
 
     def _slice_rope_for_tp(
@@ -2893,13 +3259,71 @@ class LTX2FeedForward(nn.Module):
         with _ltx2_record_function(f"ltx2_feedforward::{self.prefix}"):
             return self._forward_impl(*args, **kwargs)
 
+    def try_forward_with_residual_gate(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor,
+        gate: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if (
+            not _ltx2_fp4_fused_proj_out_bias_gate_enabled()
+            or get_tp_world_size() != 1
+            or not x.is_cuda
+            or x.dtype not in (torch.float16, torch.bfloat16)
+            or residual.shape != x.shape[:-1] + (self.proj_out.output_size,)
+            or residual.dtype != x.dtype
+            or gate.dtype != x.dtype
+            or not residual.is_contiguous()
+        ):
+            return None
+        proj_out = _ltx2_linear_base_for_fusion(self.proj_out)
+        if proj_out is None:
+            return None
+        if (
+            getattr(proj_out, "skip_bias_add", False)
+            or getattr(proj_out, "tp_size", 1) != 1
+            or proj_out.quant_method.__class__.__name__ != "ModelOptFp4LinearMethod"
+        ):
+            return None
+        bias = getattr(proj_out, "bias", None)
+        if bias is None or bias.device != x.device or bias.dtype != x.dtype:
+            return None
+
+        try:
+            from sglang.jit_kernel.diffusion.triton.ltx2_gelu import (
+                ltx2_bias_residual_gate,
+            )
+
+            hidden = _ltx2_try_fp4_fused_proj_in_bias_gelu(x, self.proj_in)
+            if hidden is None:
+                return None
+            with _ltx2_record_function(
+                f"ltx2_fp4_fused_proj_out_bias_gate::{self.prefix}.linear"
+            ):
+                update = proj_out.quant_method.apply(proj_out, hidden, bias=None)
+            if not update.is_contiguous():
+                return None
+            with _ltx2_record_function(
+                f"ltx2_fp4_fused_proj_out_bias_gate::{self.prefix}.epilogue"
+            ):
+                return ltx2_bias_residual_gate(update, residual, gate, bias)
+        except Exception as exc:
+            logger.warning_once(
+                f"Disabling LTX2 FP4 fused proj_out+bias+gate fast path: {exc}"
+            )
+            return None
+
+
     def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
-        fused_proj_in = _ltx2_try_fused_ffn_proj_in_gelu(x, self.proj_in)
+        fused_proj_in = _ltx2_try_fp4_fused_proj_in_bias_gelu(x, self.proj_in)
+        if fused_proj_in is None:
+            fused_proj_in = _ltx2_try_fused_ffn_proj_in_gelu(x, self.proj_in)
         if fused_proj_in is None:
             with _ltx2_record_function(f"ltx2_ffn_proj::{self.prefix}.proj_in"):
                 x, _ = self.proj_in(x)
             with _ltx2_record_function(f"ltx2_ffn_act::{self.prefix}.gelu"):
-                x = self.act(x)
+                fused_gelu = _ltx2_try_gelu_tanh_inplace(x)
+                x = self.act(x) if fused_gelu is None else fused_gelu
         else:
             x = fused_proj_in
         with _ltx2_record_function(f"ltx2_ffn_proj::{self.prefix}.proj_out"):
@@ -3323,15 +3747,25 @@ class LTX2TransformerBlock(nn.Module):
             mod_encoder_hidden_states = _ltx2_modulate(
                 encoder_hidden_states, v_prompt_scale, v_prompt_shift
             )
-            attn_hidden_states = self.attn2(
-                norm_hidden_states,
-                context=mod_encoder_hidden_states,
-                mask=encoder_attention_mask,
-                skip_sequence_parallel_override=disable_sequence_parallel_for_replicated_sp,
-            )
-            hidden_states = _ltx2_residual_gate_add(
-                hidden_states, attn_hidden_states, vgate_q
-            )
+            if _ltx2_fp4_fused_attn_to_out_bias_gate_enabled():
+                hidden_states = self.attn2(
+                    norm_hidden_states,
+                    context=mod_encoder_hidden_states,
+                    mask=encoder_attention_mask,
+                    skip_sequence_parallel_override=disable_sequence_parallel_for_replicated_sp,
+                    output_residual=hidden_states,
+                    output_gate=vgate_q,
+                )
+            else:
+                attn_hidden_states = self.attn2(
+                    norm_hidden_states,
+                    context=mod_encoder_hidden_states,
+                    mask=encoder_attention_mask,
+                    skip_sequence_parallel_override=disable_sequence_parallel_for_replicated_sp,
+                )
+                hidden_states = _ltx2_residual_gate_add(
+                    hidden_states, attn_hidden_states, vgate_q
+                )
 
             if audio_ada_values is None:
                 ashift_q, ascale_q, agate_q = self.get_ada_values(
@@ -3358,15 +3792,25 @@ class LTX2TransformerBlock(nn.Module):
             mod_audio_encoder_hidden_states = _ltx2_modulate(
                 audio_encoder_hidden_states, a_prompt_scale, a_prompt_shift
             )
-            attn_audio_hidden_states = self.audio_attn2(
-                norm_audio_hidden_states,
-                context=mod_audio_encoder_hidden_states,
-                mask=audio_encoder_attention_mask,
-                skip_sequence_parallel_override=disable_sequence_parallel_for_replicated_sp,
-            )
-            audio_hidden_states = _ltx2_residual_gate_add(
-                audio_hidden_states, attn_audio_hidden_states, agate_q
-            )
+            if _ltx2_fp4_fused_attn_to_out_bias_gate_enabled():
+                audio_hidden_states = self.audio_attn2(
+                    norm_audio_hidden_states,
+                    context=mod_audio_encoder_hidden_states,
+                    mask=audio_encoder_attention_mask,
+                    skip_sequence_parallel_override=disable_sequence_parallel_for_replicated_sp,
+                    output_residual=audio_hidden_states,
+                    output_gate=agate_q,
+                )
+            else:
+                attn_audio_hidden_states = self.audio_attn2(
+                    norm_audio_hidden_states,
+                    context=mod_audio_encoder_hidden_states,
+                    mask=audio_encoder_attention_mask,
+                    skip_sequence_parallel_override=disable_sequence_parallel_for_replicated_sp,
+                )
+                audio_hidden_states = _ltx2_residual_gate_add(
+                    audio_hidden_states, attn_audio_hidden_states, agate_q
+                )
         else:
             norm_hidden_states = rms_norm(hidden_states, self.norm_eps)
             attn_hidden_states = self.attn2(
@@ -3606,8 +4050,14 @@ class LTX2TransformerBlock(nn.Module):
                 )
             else:
                 norm_hidden_states, hidden_states = video_mlp_residual_norm
-        ff_output = self.ff(norm_hidden_states)
-        hidden_states = _ltx2_residual_gate_add(hidden_states, ff_output, vgate_mlp)
+        fused_ff_residual = self.ff.try_forward_with_residual_gate(
+            norm_hidden_states, hidden_states, vgate_mlp
+        )
+        if fused_ff_residual is None:
+            ff_output = self.ff(norm_hidden_states)
+            hidden_states = _ltx2_residual_gate_add(hidden_states, ff_output, vgate_mlp)
+        else:
+            hidden_states = fused_ff_residual
 
         if audio_ada_values is None:
             ashift_mlp, ascale_mlp, agate_mlp = self.get_ada_values(

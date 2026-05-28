@@ -435,6 +435,76 @@ class ModelOptFp8LinearMethod(LinearMethodBase):
         )
 
 
+def modelopt_fp4_quantize_activation(
+    x: torch.Tensor, input_scale_inv: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, tuple[int, ...], torch.dtype]:
+    input_shape = tuple(x.shape)
+    output_dtype = x.dtype
+    x = x.view(-1, input_shape[-1])
+
+    fp4_quantize = _get_fp4_quantize_op()
+    if fp4_quantize is None:
+        raise RuntimeError(
+            "No FP4 quantization kernel available. Install flashinfer or sgl_kernel."
+        )
+
+    x_fp4, x_scale_interleaved = fp4_quantize(x, input_scale_inv)
+    return x_fp4, x_scale_interleaved, input_shape, output_dtype
+
+
+def modelopt_fp4_apply_quantized_linear(
+    layer: torch.nn.Module,
+    x_fp4: torch.Tensor,
+    x_scale_interleaved: torch.Tensor,
+    input_shape: tuple[int, ...],
+    output_dtype: torch.dtype,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    output_size = layer.output_size_per_partition
+    output_shape = list(input_shape[:-1]) + [output_size]
+
+    weights_padding_cols = getattr(layer, "weights_padding_cols", 0)
+    x_fp4 = pad_nvfp4_activation_for_cutlass(x_fp4, weights_padding_cols)
+
+    w = layer.weight
+    w_scale_interleaved = layer.weight_scale_interleaved
+
+    if x_scale_interleaved.dtype == torch.uint8:
+        x_scale_interleaved = x_scale_interleaved.view(torch.float8_e4m3fn)
+    if w_scale_interleaved.dtype == torch.uint8:
+        w_scale_interleaved = w_scale_interleaved.view(torch.float8_e4m3fn)
+    fp4_gemm, flashinfer_backend = _get_fp4_gemm_op()
+    if flashinfer_backend is not None:
+        out = fp4_gemm(
+            x_fp4,
+            w.T,
+            x_scale_interleaved,
+            w_scale_interleaved.T,
+            layer.alpha,
+            output_dtype,
+            backend=flashinfer_backend,
+        )
+    elif fp4_gemm is not None:
+        out = fp4_gemm(
+            x_fp4,
+            w,
+            x_scale_interleaved,
+            w_scale_interleaved,
+            layer.alpha,
+            output_dtype,
+        )
+    else:
+        raise RuntimeError(
+            "No FP4 GEMM kernel available. Install flashinfer or sgl_kernel."
+        )
+
+    out = slice_nvfp4_output(out, output_size)
+
+    if bias is not None:
+        out.add_(bias)
+    return out.view(*output_shape)
+
+
 class ModelOptFp4LinearMethod(LinearMethodBase):
     """NVFP4 linear method using CUTLASS FP4 GEMM."""
 
@@ -622,57 +692,9 @@ class ModelOptFp4LinearMethod(LinearMethodBase):
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        output_dtype = x.dtype
-        input_shape = x.shape
-        x = x.view(-1, input_shape[-1])
-
-        output_size = layer.output_size_per_partition
-        output_shape = list(input_shape[:-1]) + [output_size]
-
-        fp4_quantize = _get_fp4_quantize_op()
-        if fp4_quantize is None:
-            raise RuntimeError(
-                "No FP4 quantization kernel available. Install flashinfer or sgl_kernel."
-            )
-
-        x_fp4, x_scale_interleaved = fp4_quantize(x, layer.input_scale_inv)
-        weights_padding_cols = getattr(layer, "weights_padding_cols", 0)
-        x_fp4 = pad_nvfp4_activation_for_cutlass(x_fp4, weights_padding_cols)
-
-        w = layer.weight
-        w_scale_interleaved = layer.weight_scale_interleaved
-
-        if x_scale_interleaved.dtype == torch.uint8:
-            x_scale_interleaved = x_scale_interleaved.view(torch.float8_e4m3fn)
-        if w_scale_interleaved.dtype == torch.uint8:
-            w_scale_interleaved = w_scale_interleaved.view(torch.float8_e4m3fn)
-        fp4_gemm, flashinfer_backend = _get_fp4_gemm_op()
-        if flashinfer_backend is not None:
-            out = fp4_gemm(
-                x_fp4,
-                w.T,
-                x_scale_interleaved,
-                w_scale_interleaved.T,
-                layer.alpha,
-                output_dtype,
-                backend=flashinfer_backend,
-            )
-        elif fp4_gemm is not None:
-            out = fp4_gemm(
-                x_fp4,
-                w,
-                x_scale_interleaved,
-                w_scale_interleaved,
-                layer.alpha,
-                output_dtype,
-            )
-        else:
-            raise RuntimeError(
-                "No FP4 GEMM kernel available. Install flashinfer or sgl_kernel."
-            )
-
-        out = slice_nvfp4_output(out, output_size)
-
-        if bias is not None:
-            out = out + bias
-        return out.view(*output_shape)
+        x_fp4, x_scale_interleaved, input_shape, output_dtype = (
+            modelopt_fp4_quantize_activation(x, layer.input_scale_inv)
+        )
+        return modelopt_fp4_apply_quantized_linear(
+            layer, x_fp4, x_scale_interleaved, input_shape, output_dtype, bias
+        )

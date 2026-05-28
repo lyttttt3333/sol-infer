@@ -438,6 +438,108 @@ Block-0 sharing 只覆盖第一个 block 的 self-attention。`SHARE_GUIDANCE_PR
 
 结果：当前 video VAE decode 是 `1.496s`；当前完整 decode stage 是 `5.913s`，其中 video postprocess 不计入 strict 口径。
 
+## 12. NVFP4 叠加实验更新
+
+本节记录在上述 fully optimized SGLang pipeline 上继续叠加 selective NVFP4 的结果。这里的 baseline 仍然是同一套 1080p/10s、单卡、two-stage official 配置：`1088x1920`, `241` frames, stage1 `30` steps, stage2 `3` steps, `guidance_scale=3.0`。
+
+当前端到端最好结果：
+
+| 方案 | total | denoise | refine | decode | vs `59.332s` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BF16 fully optimized baseline | `59.332s` | `44.421s` | `8.705s` | `5.913s` | `1.000x` |
+| selective NVFP4 video attn+FFN, previous best | `53.360s` | `41.399s` | `8.605s` | `3.194s` | `1.112x` |
+| selective NVFP4 video attn+FFN + FP4 bias in-place add | `52.938s` | `41.025s` | `8.618s` | `3.113s` | `1.121x` |
+| + FP4 `proj_in` bias+GELU + FP4 `proj_out` bias/residual/gate | `50.519s` | `38.729s` | `8.418s` | `3.204s` | `1.174x` |
+
+当前最好证据文件：
+
+```text
+outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-flashinfer-fp4biasgelu-projoutgate-best-pipeline/perf.json
+```
+
+距离目标：`59.332 / 1.2 = 49.443s`，当前 `50.519s` 还差约 `1.076s`。因此 NVFP4 已经带来额外收益，但还没有达到 1.2x 目标。
+
+### 当前保留的 NVFP4 方案
+
+量化 checkpoint 使用 selective NVFP4，只替换 video transformer 中 full run 证明确认为正收益的线性层家族：
+
+```text
+transformer_blocks.*.ff.net.0.proj
+transformer_blocks.*.ff.net.2
+transformer_blocks.*.attn1.to_q / to_k / to_v / to_out.0
+transformer_blocks.*.attn2.to_q / to_k / to_v / to_out.0
+```
+
+stage 2 使用 LoRA 合并后的对应 selective NVFP4 transformer，因此运行时不再做 stage-2 LoRA switch。当前最快 backend 组合是：
+
+```bash
+SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND=flashinfer
+SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND=cudnn
+```
+
+FP4 Linear 的实际执行流程是：
+
+```text
+activation bf16
+-> FP4 activation quantize
+-> pad activation if needed
+-> flashinfer.mm_fp4(..., backend="cudnn")
+-> slice padded output if needed
+-> bias add
+```
+
+本轮保留的正收益改动包括 FP4 linear 输出 bias 的 in-place add、FP4 `proj_in` 的 bias+GELU Triton epilogue，以及 FP4 `proj_out` 后的 bias+residual/gate Triton epilogue。bias in-place add 是把最后一步从：
+
+```python
+out = out + bias
+```
+
+改成：
+
+```python
+out.add_(bias)
+```
+
+这一步不是 GEMM epilogue fusion，bias 仍然是 GEMM 后的独立 elementwise kernel；收益来自避免为 `out + bias` 再分配一个完整输出 tensor。`proj_in` 的 bias+GELU 和 `proj_out` 的 bias+residual/gate 则是 GEMM 后紧接的 Triton epilogue fusion，减少中间 tensor 读写和小 kernel launch，但不把 GEMM 本体融合进同一个 FP4 GEMM kernel。上述改动不改变 FP4 路径的算法语义。
+
+### 算法误差口径
+
+NVFP4 本身相对 BF16 baseline 是量化方案，因此不是 BF16 算法层面的无损替换。
+
+但本轮新增的 FP4 runtime/fusion 改动不引入额外算法变化：
+
+- FP4 bias in-place add 与 `out + bias` 数学等价。
+- FP4 `proj_in` bias+GELU 等价于 `proj_in(x) + bias` 后接 `GELU(approximate="tanh")`。
+- FP4 `proj_out` bias+residual/gate 等价于 `residual + (proj_out(x) + bias) * gate`。
+- shared activation quant 的 QKV 实验只复用同一 input scale 下的 activation quant；没有被纳入 best。
+- packed QKV 因真实 checkpoint 中 Q/K/V `weight_scale_2` 不一致，不能直接用单 scalar alpha 无损合并成一次 GEMM。
+
+因此当前 best 的额外误差来源仍然是 selective NVFP4 量化本身，不是 bias in-place add。
+
+### 被验证但不保留的 NVFP4 候选
+
+| 候选 | 结果 | 结论 |
+| --- | ---: | --- |
+| FP4 shared-QKV activation quant | `53.822s` | 只省 activation quant，仍是 3 个 GEMM，full run 慢于 best。 |
+| packed QKV equal-alpha microbench | stage1 `1.028x` vs shared, stage2 `0.979x` vs shared | 理论收益很小，且真实权重 alpha 不一致。 |
+| packed QKV + output rescale microbench | stage1 `0.655x`, stage2 `0.628x` vs shared | 为修正不同 alpha 需要大输出 rescale，负收益。 |
+| Triton in-place GELU | microbench `1.33x`，full `52.982s` | 单独开不超过 bias-only；作为 FP4 `proj_in` bias+GELU 子路径后纳入 best。 |
+| attention gate scaling in-place | full `54.337s` | 负收益，已撤回。 |
+| GELU + gate in-place | full `54.035s` | 旧 in-place 组合负收益。 |
+| FP4 attention `to_out` bias/residual/gate epilogue | full `51.424s` | 慢于 `50.519s` best，不保留默认开启。 |
+| FlashInfer activation quant `backend="cuda"` | full `53.690s` | 慢于默认 FlashInfer quant。 |
+| FlashInfer activation quant `backend="cute-dsl"` | full `58.327s` | 负收益。 |
+| repo-local `sglang.jit_kernel.nvfp4.scaled_fp4_quant` | full `53.620s` | 慢于默认 FlashInfer quant。 |
+| FlashInfer FP4 GEMM `backend="trtllm"` | full `58.365s` | 负收益。 |
+
+### 下一步需要的真正 1.2x 空间
+
+当前剩余 1.2x 差距约 `1.076s`。从已有 profile 看，attention core 仍有约 `15s+`，不在 FP4 Linear GEMM 范围内；video QKV/FFN FP4 GEMM 周围的小 kernel 优化只能再提供亚秒级收益。要达到 `49.44s`，更可能需要下面之一：
+
+- FP4 GEMM 原生支持 bias/GELU/gate epilogue，而不是 GEMM 后单独 kernel。
+- 支持 per-output/per-group alpha 的 packed QKV FP4 GEMM，避免真实 Q/K/V scale 不一致导致的输出 rescale。
+- attention core 本身的 fixed-shape kernel 调优或近似/算法级改动；后者会超出当前“只做实现层优化”的无损范围。
+
 ## 不计入提升或被拒绝的候选
 
 以下项做过验证，但不进入最终版：
