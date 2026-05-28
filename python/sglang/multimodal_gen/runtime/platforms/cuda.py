@@ -425,6 +425,19 @@ class CudaPlatformBase(Platform):
         elif selected_backend == AttentionBackendEnum.TORCH_SDPA:
             logger.info("Using Torch SDPA backend")
             return "sglang.multimodal_gen.runtime.layers.attention.backends.sdpa.SDPABackend"
+        elif selected_backend == AttentionBackendEnum.PIECEWISE_ATTN:
+            if cls.is_blackwell():
+                from sglang.multimodal_gen.runtime.layers.attention.backends.flash_attn import (
+                    set_fa_ver,
+                )
+
+                set_fa_ver(4)
+            from sglang.multimodal_gen.runtime.layers.attention.backends.piecewise_attn import (  # noqa: F401
+                PiecewiseAttentionBackend,
+            )
+
+            logger.info("Using Piecewise Attention backend")
+            return "sglang.multimodal_gen.runtime.layers.attention.backends.piecewise_attn.PiecewiseAttentionBackend"
         elif selected_backend == AttentionBackendEnum.SLA_ATTN:
             logger.info("Using Sparse Linear Attention backend")
             return "sglang.multimodal_gen.runtime.layers.attention.backends.sparse_linear_attn.SparseLinearAttentionBackend"
