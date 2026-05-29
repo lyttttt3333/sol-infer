@@ -191,27 +191,39 @@ run_variant() {
   ) >"$out_dir/run.log" 2>"$out_dir/run.err"
 }
 
-pids=()
-run_variant "sglang_dense_main" 0 0 dense &
-pids+=("$!")
-run_variant "kwl_fusion_report" 1 10 kwl &
-pids+=("$!")
-run_variant "sparse_bringup_piecewise" 2 20 sparse \
-  --component-attention-backends.transformer piecewise_attn \
-  --component-attention-backends.transformer_2 piecewise_attn &
-pids+=("$!")
-run_variant "nvfp4_piecewise" 3 30 nvfp4_piecewise \
-  --attention-backend piecewise_attn \
-  --component-paths.transformer outputs/ltx23-selective-nvfp4-video-attn-ffn-transformer-mat \
-  --component-paths.transformer_2 outputs/ltx23-selective-nvfp4-video-attn-ffn-stage2-lora-transformer-mat &
-pids+=("$!")
-
 status=0
-for pid in "${pids[@]}"; do
-  if ! wait "$pid"; then
-    status=1
-  fi
-done
+if [[ "${SEQUENTIAL_VARIANTS:-0}" == "1" ]]; then
+  run_variant "sglang_dense_main" 0 0 dense || status=1
+  run_variant "kwl_fusion_report" 0 10 kwl || status=1
+  run_variant "sparse_bringup_piecewise" 0 20 sparse \
+    --component-attention-backends.transformer piecewise_attn \
+    --component-attention-backends.transformer_2 piecewise_attn || status=1
+  run_variant "nvfp4_piecewise" 0 30 nvfp4_piecewise \
+    --attention-backend piecewise_attn \
+    --component-paths.transformer outputs/ltx23-selective-nvfp4-video-attn-ffn-transformer-mat \
+    --component-paths.transformer_2 outputs/ltx23-selective-nvfp4-video-attn-ffn-stage2-lora-transformer-mat || status=1
+else
+  pids=()
+  run_variant "sglang_dense_main" 0 0 dense &
+  pids+=("$!")
+  run_variant "kwl_fusion_report" 1 10 kwl &
+  pids+=("$!")
+  run_variant "sparse_bringup_piecewise" 2 20 sparse \
+    --component-attention-backends.transformer piecewise_attn \
+    --component-attention-backends.transformer_2 piecewise_attn &
+  pids+=("$!")
+  run_variant "nvfp4_piecewise" 3 30 nvfp4_piecewise \
+    --attention-backend piecewise_attn \
+    --component-paths.transformer outputs/ltx23-selective-nvfp4-video-attn-ffn-transformer-mat \
+    --component-paths.transformer_2 outputs/ltx23-selective-nvfp4-video-attn-ffn-stage2-lora-transformer-mat &
+  pids+=("$!")
+
+  for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+      status=1
+    fi
+  done
+fi
 if [[ "$status" != "0" ]]; then
   echo "At least one SGLang variant failed. Check $ROOT/*/run.err" >&2
   exit "$status"
