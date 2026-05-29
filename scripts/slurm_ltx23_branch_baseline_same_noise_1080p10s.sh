@@ -13,7 +13,16 @@
 set -euo pipefail
 
 cd /lustre/fs1/portfolios/nvr/projects/nvr_elm_llm/users/yitongl/code/Sol-LTX-Infer
-source /home/yitongl/.codex/skills/code-storage-env/scripts/code_storage_env.sh
+mkdir -p outputs/slurm outputs/.cache/huggingface outputs/.cache/torch outputs/.cache/triton outputs/.tmp
+export HF_HOME="$PWD/outputs/.cache/huggingface"
+export XDG_CACHE_HOME="$PWD/outputs/.cache"
+export TORCH_HOME="$PWD/outputs/.cache/torch"
+export TRITON_CACHE_DIR="$PWD/outputs/.cache/triton"
+export TMPDIR="$PWD/outputs/.tmp"
+
+if [[ ! -e outputs/LTX-2.3-local ]]; then
+  ln -s ltx23-diffusers-local-view outputs/LTX-2.3-local
+fi
 
 export PYTHONPATH="$PWD/python:${PYTHONPATH:-}"
 export CUDA_HOME="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cu13"
@@ -22,8 +31,9 @@ export PATH="$CUDA_HOME/bin:${PATH:-}"
 export LD_LIBRARY_PATH="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cublas/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cudnn/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/nccl/lib:$CUDA_HOME/lib:$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
 
 ROOT="${ROOT:-outputs/ltx23-branch-baselines-same-noise-1080p10s}"
-MODEL_DIR="${MODEL_DIR:-/home/yitongl/.cache/sgl_diffusion/materialized_models/Lightricks__LTX-2.3-c24cea94ab17c493}"
-DIFFUSERS_PRETRAINED="${DIFFUSERS_PRETRAINED:-diffusers/LTX-2.3-Diffusers}"
+MODEL_DIR="${MODEL_DIR:-outputs/ltx23-diffusers-local-view}"
+LTX_MODEL_PATH="${LTX_MODEL_PATH:-outputs/LTX-2.3-local}"
+DIFFUSERS_PRETRAINED="${DIFFUSERS_PRETRAINED:-outputs/ltx23-diffusers-official-runtime}"
 DISTILLED_LORA="${DISTILLED_LORA:-$MODEL_DIR/ltx-2.3-22b-distilled-lora-384.safetensors}"
 PROMPT="${PROMPT:-A cinematic 10 second aerial shot of an antique brass clockwork train crossing a snowy mountain bridge at sunrise, steam drifting through golden light, smooth camera movement, high detail}"
 NEGATIVE_PROMPT="${NEGATIVE_PROMPT:-blurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, wrong hand count, artifacts around text, inconsistent perspective, camera shake, incorrect depth of field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, wrong gaze direction, mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, off-sync audio, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, flat lighting, inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts.}"
@@ -82,7 +92,7 @@ else
 fi
 
 COMMON_ARGS=(
-  --model-path Lightricks/LTX-2.3
+  --model-path "$LTX_MODEL_PATH"
   --backend auto
   --pipeline-class-name LTX2TwoStagePipeline
   --num-gpus 1

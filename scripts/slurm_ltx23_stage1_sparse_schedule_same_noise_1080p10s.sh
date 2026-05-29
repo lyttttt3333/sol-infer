@@ -13,7 +13,16 @@
 set -euo pipefail
 
 cd /lustre/fs1/portfolios/nvr/projects/nvr_elm_llm/users/yitongl/code/Sol-LTX-Infer
-source /home/yitongl/.codex/skills/code-storage-env/scripts/code_storage_env.sh
+mkdir -p outputs/slurm outputs/.cache/huggingface outputs/.cache/torch outputs/.cache/triton outputs/.tmp
+export HF_HOME="$PWD/outputs/.cache/huggingface"
+export XDG_CACHE_HOME="$PWD/outputs/.cache"
+export TORCH_HOME="$PWD/outputs/.cache/torch"
+export TRITON_CACHE_DIR="$PWD/outputs/.cache/triton"
+export TMPDIR="$PWD/outputs/.tmp"
+
+if [[ ! -e outputs/LTX-2.3-local ]]; then
+  ln -s ltx23-diffusers-local-view outputs/LTX-2.3-local
+fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTHONPATH="$PWD/python:${PYTHONPATH:-}"
@@ -23,6 +32,7 @@ export PATH="$CUDA_HOME/bin:${PATH:-}"
 export LD_LIBRARY_PATH="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cublas/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cudnn/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/nccl/lib:$CUDA_HOME/lib:$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
 
 ROOT="${ROOT:-outputs/ltx23-branch-baselines-same-noise-1080p10s}"
+LTX_MODEL_PATH="${LTX_MODEL_PATH:-outputs/LTX-2.3-local}"
 SHARED_DIR="$ROOT/shared_noise"
 OUT_DIR="$ROOT/stage1_sparse_schedule"
 PROMPT="${PROMPT:-A cinematic 10 second aerial shot of an antique brass clockwork train crossing a snowy mountain bridge at sunrise, steam drifting through golden light, smooth camera movement, high detail}"
@@ -59,7 +69,7 @@ export SGLANG_PIECEWISE_ATTN_STAGE1_START_SPARSITY="${SGLANG_PIECEWISE_ATTN_STAG
 export SGLANG_PIECEWISE_ATTN_STAGE1_END_SPARSITY="${SGLANG_PIECEWISE_ATTN_STAGE1_END_SPARSITY:-0.9}"
 
 .conda/ltx23/bin/python -m sglang.multimodal_gen.runtime.entrypoints.cli.main generate \
-  --model-path Lightricks/LTX-2.3 \
+  --model-path "$LTX_MODEL_PATH" \
   --backend auto \
   --pipeline-class-name LTX2TwoStagePipeline \
   --num-gpus 1 \
