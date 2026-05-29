@@ -75,6 +75,48 @@ Its core features include:
 ## Benchmark and Performance
 Learn more in the release blogs: [v0.2 blog](https://lmsys.org/blog/2024-07-25-sglang-llama3/), [v0.3 blog](https://lmsys.org/blog/2024-09-04-sglang-v0-3/), [v0.4 blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/), [Large-scale expert parallelism](https://lmsys.org/blog/2025-05-05-large-scale-ep/), [GB200 rack-scale parallelism](https://lmsys.org/blog/2025-09-25-gb200-part-2/), [GB300 long context](https://lmsys.org/blog/2026-02-19-gb300-longctx/).
 
+
+### LTX 2.3 1080p10s Lossless Kernel-Only Record
+
+On branch `ltx2-dit-fusion-report`, commit `b801a27ce6e760f788c06daaa0cec18360d9722f`
+contains the recorded lossless kernel/runtime-only LTX 2.3 single-GPU result below 60s for
+`1920x1088`, `241` frames, `24` fps, `30` inference steps, and `guidance_scale=3.0`.
+The run uses `LTX2TwoStagePipeline`, `performance_mode=speed`, resident two-stage DiTs,
+and keeps sampling semantics unchanged: no sparse attention, no NVFP4/low-precision
+quantization, no pruning, and no scheduler/CFG/LoRA/step-count changes.
+
+- End-to-end warmed request time, excluding warmup: `59.33s`.
+- Core time through VAE decode: `54.915s`.
+- Stage 1 denoise: `44.421s` total, `1.481s/step`.
+- Stage 2 refinement: `8.705s` total, `2.900s/step`.
+- Video/audio decode stage: `5.913s`.
+- Profile artifact: `outputs/ltx23-dev-1080p10s-speed-resident-prefix-qknorm-rope-dualmod-adavalues-all9-residual-ffn-gateout-audioqkvg-tiledvae-decode-profile/perf.json`.
+- Launch script: `outputs/slurm/ltx23_all9_gateout_audioqkvg_prefix_tiledvae_decode_profile_1080p.sbatch`.
+- Launch log: `outputs/slurm/ltx23-prefix-decode-1080-2896582.out`.
+- Primary implementation paths: `python/sglang/multimodal_gen/runtime/models/dits/ltx_2.py`,
+  `python/sglang/multimodal_gen/runtime/pipelines_core/stages/denoising_av.py`, and
+  `python/sglang/multimodal_gen/runtime/pipelines_core/stages/decoding_av.py`.
+
+The launch enables the lossless fusion/runtime path with:
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+export PYTHONPATH=python
+export SGLANG_LTX2_SHARE_BLOCK0_SELF_ATTN=1
+export SGLANG_LTX2_FUSED_ADALN=1
+export SGLANG_LTX2_FUSED_QKNORM_ROPE=1
+export SGLANG_LTX2_FUSED_DUAL_MODULATE=1
+export SGLANG_LTX2_FUSED_ADA_VALUES_ALL=1
+export SGLANG_LTX2_FUSED_RESIDUAL_GATE=1
+export SGLANG_LTX2_FUSED_FFN_PROJ_IN_GELU=1
+export SGLANG_LTX2_COMPILE_GATE_TO_OUT=1
+export SGLANG_LTX2_FUSED_AUDIO_QKVG=1
+export SGLANG_LTX2_COMPILE_TILED_VAE_DECODER=1
+export SGLANG_LTX2_VAE_COMPILE_MODE=max-autotune-no-cudagraphs
+export SGLANG_LTX2_SHARE_GUIDANCE_PREFIX=1
+export SGLANG_DIFFUSION_DECODE_PROFILE=1
+```
+
 ## Adoption and Sponsorship
 SGLang has been deployed at large scale, generating trillions of tokens in production each day. It is trusted and adopted by a wide range of leading enterprises and institutions, including xAI, AMD, NVIDIA, Intel, LinkedIn, Cursor, Oracle Cloud, Google Cloud, Microsoft Azure, AWS, Atlas Cloud, Voltage Park, Nebius, DataCrunch, Novita, InnoMatrix, MIT, UCLA, the University of Washington, Stanford, UC Berkeley, Tsinghua University, Jam & Tea Studios, Baseten, and other major technology organizations.
 As an open-source LLM inference engine, SGLang has become the de facto industry standard, with deployments running on over 400,000 GPUs worldwide.
