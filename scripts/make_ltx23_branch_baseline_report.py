@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
-import cv2
-import numpy as np
 import torch
+from imageio_ffmpeg import get_ffmpeg_exe
 
 DEFAULT_ROOT = "outputs/ltx23-branch-baselines-same-noise-1080p10s"
 DEFAULT_AUDIT = "outputs/ltx_branch_audit/branch_baseline_report.md"
@@ -162,48 +163,85 @@ def timing_for_variant(root: Path, spec: dict[str, str]) -> dict[str, Any] | Non
     return row
 
 
-def draw_label(frame: np.ndarray, text: str) -> None:
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (frame.shape[1], 42), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.62, frame, 0.38, 0, dst=frame)
-    cv2.putText(frame, text, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2, cv2.LINE_AA)
-
-
 def make_multiway_video(rows: list[dict[str, Any]], out_path: Path, cell_w: int = 512) -> dict[str, Any]:
+    def probe(path: Path) -> tuple[float, int, int, int]:
+        proc = subprocess.run(
+            [get_ffmpeg_exe(), "-hide_banner", "-i", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        text = proc.stderr
+        size_match = re.search(r"Video:.*? (\d{2,5})x(\d{2,5})", text)
+        fps_match = re.search(r"(\d+(?:\.\d+)?) fps", text)
+        duration_match = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", text)
+        src_w = int(size_match.group(1)) if size_match else 1920
+        src_h = int(size_match.group(2)) if size_match else 1088
+        fps = float(fps_match.group(1)) if fps_match else 24.0
+        frames = 0
+        if duration_match:
+            hours, minutes, seconds = duration_match.groups()
+            duration_s = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            frames = int(round(duration_s * fps))
+        return fps, frames, src_w, src_h
+
     videos = [Path(row["output_video"]) for row in rows]
-    caps = [cv2.VideoCapture(str(path)) for path in videos]
-    if not all(cap.isOpened() for cap in caps):
-        bad = [str(videos[i]) for i, cap in enumerate(caps) if not cap.isOpened()]
-        raise RuntimeError(f"failed to open videos: {bad}")
-    fps = caps[0].get(cv2.CAP_PROP_FPS) or 24.0
-    frame_count = int(min(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0 for cap in caps))
-    src_w = int(caps[0].get(cv2.CAP_PROP_FRAME_WIDTH) or 1920)
-    src_h = int(caps[0].get(cv2.CAP_PROP_FRAME_HEIGHT) or 1088)
+    missing = [str(path) for path in videos if not path.exists()]
+    if missing:
+        raise RuntimeError(f"missing videos: {missing}")
+    fps, frame_count, src_w, src_h = probe(videos[0])
     cell_h = max(1, int(round(cell_w * src_h / src_w)))
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (cell_w * len(caps), cell_h))
-    if not writer.isOpened():
-        raise RuntimeError(f"failed to open writer: {out_path}")
-    written = 0
-    for _ in range(frame_count):
-        cells = []
-        for cap, row in zip(caps, rows):
-            ok, frame = cap.read()
-            if not ok:
-                break
-            cell = cv2.resize(frame, (cell_w, cell_h), interpolation=cv2.INTER_AREA)
-            total = row.get("total_s")
-            label = f"{row['label']} {total:.1f}s" if isinstance(total, (int, float)) else row["label"]
-            draw_label(cell, label)
-            cells.append(cell)
-        if len(cells) != len(caps):
-            break
-        writer.write(np.concatenate(cells, axis=1))
-        written += 1
-    writer.release()
-    for cap in caps:
-        cap.release()
-    return {"path": str(out_path), "fps": fps, "frames": written, "width": cell_w * len(rows), "height": cell_h}
+    label_dir = out_path.parent / ".multiway_labels"
+    label_dir.mkdir(parents=True, exist_ok=True)
+
+    inputs: list[str] = []
+    filter_parts: list[str] = []
+    stack_inputs = ""
+    for index, (path, row) in enumerate(zip(videos, rows)):
+        inputs.extend(["-i", str(path)])
+        total = row.get("total_s")
+        label = f"{row['label']} {total:.1f}s" if isinstance(total, (int, float)) else row["label"]
+        label_path = label_dir / f"label_{index}.txt"
+        label_path.write_text(label + "\n")
+        filter_parts.append(
+            f"[{index}:v]scale={cell_w}:{cell_h}:force_original_aspect_ratio=decrease,"
+            f"pad={cell_w}:{cell_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,"
+            f"drawbox=x=0:y=0:w=iw:h=42:color=black@0.62:t=fill,"
+            f"drawtext=textfile={label_path}:fontcolor=white:fontsize=24:x=12:y=10[v{index}]"
+        )
+        stack_inputs += f"[v{index}]"
+    filter_parts.append(f"{stack_inputs}hstack=inputs={len(rows)}[v]")
+    command = [
+        get_ffmpeg_exe(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
+        *inputs,
+        "-filter_complex",
+        ";".join(filter_parts),
+        "-map",
+        "[v]",
+        "-r",
+        f"{fps:g}",
+        "-c:v",
+        "mpeg4",
+        "-q:v",
+        "2",
+        "-pix_fmt",
+        "yuv420p",
+        str(out_path),
+    ]
+    subprocess.run(command, check=True)
+    return {"path": str(out_path), "fps": fps, "frames": frame_count, "width": cell_w * len(rows), "height": cell_h}
 
 
 def write_markdown(root: Path, audit_path: Path, rows: list[dict[str, Any]], alignment: dict[str, Any], video_info: dict[str, Any] | None) -> Path:
