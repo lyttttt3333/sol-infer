@@ -1,3 +1,5 @@
+import os
+
 import torch
 from diffusers.utils.torch_utils import randn_tensor
 
@@ -22,6 +24,48 @@ from sglang.multimodal_gen.runtime.server_args import (
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
+
+
+
+def _load_saved_latents(path: str, tensor_name: str) -> torch.Tensor:
+    payload = torch.load(path, map_location="cpu")
+    if isinstance(payload, torch.Tensor):
+        tensor = payload
+    elif isinstance(payload, dict):
+        tensor = None
+        for key in ("latents", tensor_name, f"{tensor_name}_latents"):
+            value = payload.get(key)
+            if isinstance(value, torch.Tensor):
+                tensor = value
+                break
+        if tensor is None:
+            raise ValueError(
+                f"{path} does not contain a tensor under latents/{tensor_name}/{tensor_name}_latents"
+            )
+    else:
+        raise TypeError(f"{path} contains unsupported payload type {type(payload)!r}")
+
+    if tensor.ndim != 3:
+        raise ValueError(
+            f"{path} contains {tensor_name} latents with shape {tuple(tensor.shape)}, expected packed [B, S, D]"
+        )
+    return tensor
+
+
+def _dump_stage1_initial_latents(tensor_name: str, tensor: torch.Tensor) -> None:
+    dump_dir = os.environ.get("SGLANG_LTX2_DUMP_STAGE1_INITIAL_LATENTS_DIR")
+    if not dump_dir:
+        return
+    os.makedirs(dump_dir, exist_ok=True)
+    path = os.path.join(dump_dir, f"sglang_stage1_{tensor_name}_initial.pt")
+    torch.save(
+        {
+            "latents": tensor.detach().cpu(),
+            "shape": list(tensor.shape),
+            "dtype": str(tensor.dtype),
+        },
+        path,
+    )
 
 
 class LTX2AVLatentPreparationStage(LatentPreparationStage):
@@ -151,7 +195,17 @@ class LTX2AVLatentPreparationStage(LatentPreparationStage):
             latent_num_frames if latent_num_frames is not None else batch.num_frames
         )
 
-        if latents is None:
+        video_latents_path = os.environ.get("SGLANG_LTX2_STAGE1_VIDEO_LATENTS_PATH")
+        if latents is None and video_latents_path:
+            latents = _load_saved_latents(video_latents_path, "video").to(
+                device=device, dtype=dtype
+            )
+            batch.extra["ltx2_stage1_packed_video_shape"] = tuple(latents.shape)
+
+            latent_ids = server_args.pipeline_config.maybe_prepare_latent_ids(latents)
+            if latent_ids is not None:
+                batch.latent_ids = latent_ids.to(device=device)
+        elif latents is None:
             latent_shape = server_args.pipeline_config.prepare_latent_shape(
                 batch, batch_size, num_frames
             )
@@ -174,12 +228,14 @@ class LTX2AVLatentPreparationStage(LatentPreparationStage):
             latents = server_args.pipeline_config.maybe_pack_latents(
                 latents, batch_size, batch
             )
+            batch.extra["ltx2_stage1_packed_video_shape"] = tuple(latents.shape)
 
         if hasattr(self.scheduler, "init_noise_sigma"):
             latents = latents * self.scheduler.init_noise_sigma
 
         batch.latents = latents
         batch.raw_latent_shape = latents.shape
+        _dump_stage1_initial_latents("video", latents)
 
         # 2. Prepare Audio Latents (optional)
         # Default to True if not specified
@@ -194,7 +250,13 @@ class LTX2AVLatentPreparationStage(LatentPreparationStage):
 
         audio_latents = batch.audio_latents
 
-        if audio_latents is None:
+        audio_latents_path = os.environ.get("SGLANG_LTX2_STAGE1_AUDIO_LATENTS_PATH")
+        if audio_latents is None and audio_latents_path:
+            audio_latents = _load_saved_latents(audio_latents_path, "audio").to(
+                device=device, dtype=dtype
+            )
+            batch.extra["ltx2_stage1_packed_audio_shape"] = tuple(audio_latents.shape)
+        elif audio_latents is None:
             latent_shape = server_args.pipeline_config.prepare_audio_latent_shape(
                 batch, batch_size, batch.num_frames
             )
@@ -211,9 +273,11 @@ class LTX2AVLatentPreparationStage(LatentPreparationStage):
             audio_latents = server_args.pipeline_config.maybe_pack_audio_latents(
                 audio_latents, batch_size, batch
             )
+            batch.extra["ltx2_stage1_packed_audio_shape"] = tuple(audio_latents.shape)
 
         # Store in batch
         batch.audio_latents = audio_latents
         batch.raw_audio_latent_shape = audio_latents.shape
+        _dump_stage1_initial_latents("audio", audio_latents)
 
         return batch

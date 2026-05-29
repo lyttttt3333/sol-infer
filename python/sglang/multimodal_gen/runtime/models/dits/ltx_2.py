@@ -3265,19 +3265,23 @@ class LTX2FeedForward(nn.Module):
         residual: torch.Tensor,
         gate: torch.Tensor,
     ) -> torch.Tensor | None:
+        proj_out = _ltx2_linear_base_for_fusion(self.proj_out)
+        if proj_out is None:
+            return None
+        proj_out_size = getattr(self.proj_out, "output_size", None)
+        if proj_out_size is None:
+            proj_out_size = getattr(proj_out, "output_size", None)
         if (
             not _ltx2_fp4_fused_proj_out_bias_gate_enabled()
             or get_tp_world_size() != 1
             or not x.is_cuda
             or x.dtype not in (torch.float16, torch.bfloat16)
-            or residual.shape != x.shape[:-1] + (self.proj_out.output_size,)
+            or proj_out_size is None
+            or residual.shape != x.shape[:-1] + (proj_out_size,)
             or residual.dtype != x.dtype
             or gate.dtype != x.dtype
             or not residual.is_contiguous()
         ):
-            return None
-        proj_out = _ltx2_linear_base_for_fusion(self.proj_out)
-        if proj_out is None:
             return None
         if (
             getattr(proj_out, "skip_bias_add", False)

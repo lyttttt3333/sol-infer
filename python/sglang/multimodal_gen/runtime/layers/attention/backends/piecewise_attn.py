@@ -24,6 +24,8 @@ from triton.tools.tensor_descriptor import TensorDescriptor
 
 logger = init_logger(__name__)
 
+_COMPILED_TAYLOR_ERROR_BLOCK_INDICES = None
+
 _PYTORCH_DEFAULT_CUDA_SDP_BACKENDS = [
     SDPBackend.CUDNN_ATTENTION,
     SDPBackend.FLASH_ATTENTION,
@@ -825,16 +827,44 @@ def taylor_error_block_indices(
     top_k = min(top_k, NT_KV)
 
     # [B, H, NT_Q, NT_KV]
-    mean_logits = torch.einsum("bhik,bhjk->bhij", qc, kc) * scale
+    route_score = torch.einsum("bhik,bhjk->bhij", qc, kc)
+    route_score.mul_(scale)
 
     # Use log-domain score to avoid exp overflow.
     # Equivalent to topk(exp(2*logit) * k_var).
     log_k_var = torch.log(k_var.clamp_min(eps)).unsqueeze(-2)  # [B,H,1,NT_KV]
+    route_score.add_(log_k_var)
 
-    route_score = 1.0 * mean_logits + log_k_var
-
-    block_indices = torch.topk(route_score, k=top_k, dim=-1).indices.to(torch.int32)
+    block_indices = torch.topk(
+        route_score,
+        k=top_k,
+        dim=-1,
+        sorted=False,
+    ).indices.to(torch.int32)
     return block_indices
+
+
+def _should_compile_piecewise_route() -> bool:
+    return os.environ.get("SGLANG_PIECEWISE_ATTN_COMPILE_ROUTE", "0").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _compiled_taylor_error_block_indices():
+    global _COMPILED_TAYLOR_ERROR_BLOCK_INDICES
+    if _COMPILED_TAYLOR_ERROR_BLOCK_INDICES is None:
+        mode = os.environ.get(
+            "SGLANG_PIECEWISE_ATTN_COMPILE_ROUTE_MODE",
+            "max-autotune-no-cudagraphs",
+        )
+        _COMPILED_TAYLOR_ERROR_BLOCK_INDICES = torch.compile(
+            taylor_error_block_indices,
+            mode=mode,
+            fullgraph=False,
+        )
+    return _COMPILED_TAYLOR_ERROR_BLOCK_INDICES
 
 
 class PiecewiseAttentionFunction(torch.autograd.Function):
@@ -1130,7 +1160,12 @@ class PiecewiseAttentionImpl(AttentionImpl):
                     block_size=block_size,
                     include_v_centroid=self.approx_remainder,
                 )
-                block_indices = taylor_error_block_indices(
+                route_fn = (
+                    _compiled_taylor_error_block_indices()
+                    if _should_compile_piecewise_route()
+                    else taylor_error_block_indices
+                )
+                block_indices = route_fn(
                     qc=qc,
                     kc=kc,
                     k_var=k_var,

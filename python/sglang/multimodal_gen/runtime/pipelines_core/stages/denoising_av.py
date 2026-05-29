@@ -1,3 +1,5 @@
+import os
+
 import torch
 
 from sglang.multimodal_gen.configs.pipeline_configs.ltx_2 import is_ltx23_native_variant
@@ -18,6 +20,46 @@ from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
+
+
+
+def _load_saved_stage2_noise(
+    path: str, reference_tensor: torch.Tensor, tensor_name: str
+) -> torch.Tensor:
+    payload = torch.load(path, map_location="cpu")
+    if isinstance(payload, torch.Tensor):
+        tensor = payload
+    elif isinstance(payload, dict):
+        tensor = payload.get("latents")
+        if not isinstance(tensor, torch.Tensor):
+            tensor = payload.get(tensor_name)
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError(f"{path} does not contain a tensor under latents/{tensor_name}")
+    else:
+        raise TypeError(f"{path} contains unsupported payload type {type(payload)!r}")
+    if tuple(tensor.shape) != tuple(reference_tensor.shape):
+        raise ValueError(
+            f"{path} contains {tensor_name} noise with shape {tuple(tensor.shape)}, expected {tuple(reference_tensor.shape)}"
+        )
+    return tensor.to(device=reference_tensor.device, dtype=reference_tensor.dtype)
+
+
+def _dump_stage2_renoise_tensor(
+    tensor_name: str, suffix: str, tensor: torch.Tensor
+) -> None:
+    dump_dir = os.environ.get("SGLANG_LTX2_DUMP_STAGE2_RENOISE_DIR")
+    if not dump_dir:
+        return
+    os.makedirs(dump_dir, exist_ok=True)
+    path = os.path.join(dump_dir, f"sglang_stage2_{tensor_name}_{suffix}.pt")
+    torch.save(
+        {
+            "latents": tensor.detach().cpu(),
+            "shape": list(tensor.shape),
+            "dtype": str(tensor.dtype),
+        },
+        path,
+    )
 
 
 class LTX2AVDenoisingStage(LTX2DenoisingStage):
@@ -272,9 +314,15 @@ class LTX2RefinementStage(LTX2AVDenoisingStage):
                 clean_latent_background=batch.ltx2_ti2v_clean_latent_background,
             )
             if is_ltx23:
-                video_noise = self._ltx2_renoise_like(
-                    prepared_latents, renoise_generator
-                )
+                video_noise_path = os.environ.get("SGLANG_LTX2_STAGE2_VIDEO_NOISE_PATH")
+                if video_noise_path:
+                    video_noise = _load_saved_stage2_noise(
+                        video_noise_path, prepared_latents, "video_noise"
+                    )
+                else:
+                    video_noise = self._ltx2_renoise_like(
+                        prepared_latents, renoise_generator
+                    )
             else:
                 video_noise = self._randn_like_with_batch_generators(
                     prepared_latents, batch
@@ -288,17 +336,27 @@ class LTX2RefinementStage(LTX2AVDenoisingStage):
                     video_noise.float() * scaled_mask
                     + prepared_latents.float() * (1.0 - scaled_mask)
                 ).to(prepared_latents.dtype)
+                _dump_stage2_renoise_tensor("video", "noise", video_noise)
+                _dump_stage2_renoise_tensor("video", "initial", batch.latents)
             else:
                 batch.latents = (
                     video_noise * scaled_mask + prepared_latents * (1 - scaled_mask)
                 ).to(prepared_latents.dtype)
         else:
             if is_ltx23:
-                video_noise = self._ltx2_renoise_like(batch.latents, renoise_generator)
+                video_noise_path = os.environ.get("SGLANG_LTX2_STAGE2_VIDEO_NOISE_PATH")
+                if video_noise_path:
+                    video_noise = _load_saved_stage2_noise(
+                        video_noise_path, batch.latents, "video_noise"
+                    )
+                else:
+                    video_noise = self._ltx2_renoise_like(batch.latents, renoise_generator)
                 batch.latents = (
                     video_noise.float() * noise_scale
                     + batch.latents.float() * (1.0 - noise_scale)
                 ).to(batch.latents.dtype)
+                _dump_stage2_renoise_tensor("video", "noise", video_noise)
+                _dump_stage2_renoise_tensor("video", "initial", batch.latents)
             else:
                 video_noise = self._randn_like_with_batch_generators(
                     batch.latents, batch
@@ -309,13 +367,21 @@ class LTX2RefinementStage(LTX2AVDenoisingStage):
 
         if isinstance(batch.audio_latents, torch.Tensor):
             if is_ltx23:
-                audio_noise = self._ltx2_renoise_like(
-                    batch.audio_latents, renoise_generator
-                )
+                audio_noise_path = os.environ.get("SGLANG_LTX2_STAGE2_AUDIO_NOISE_PATH")
+                if audio_noise_path:
+                    audio_noise = _load_saved_stage2_noise(
+                        audio_noise_path, batch.audio_latents, "audio_noise"
+                    )
+                else:
+                    audio_noise = self._ltx2_renoise_like(
+                        batch.audio_latents, renoise_generator
+                    )
                 batch.audio_latents = (
                     audio_noise.float() * noise_scale
                     + batch.audio_latents.float() * (1.0 - noise_scale)
                 ).to(batch.audio_latents.dtype)
+                _dump_stage2_renoise_tensor("audio", "noise", audio_noise)
+                _dump_stage2_renoise_tensor("audio", "initial", batch.audio_latents)
             else:
                 audio_noise = self._randn_like_with_batch_generators(
                     batch.audio_latents, batch, is_audio=True

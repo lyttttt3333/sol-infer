@@ -32,11 +32,13 @@ from diffusers import (
 from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
 from diffusers.pipelines.ltx2.vocoder import LTX2Vocoder
+from diffusers.utils import export_to_video
 
 
 DEFAULT_PRETRAINED_MODEL_ID = "diffusers/LTX-2.3-Diffusers"
 
 DEFAULT_MODEL_DIR = os.environ.get("LTX23_MODEL_DIR")
+DEFAULT_RUNTIME_MODEL_DIR = os.environ.get("LTX23_DIFFUSERS_RUNTIME_DIR", "outputs/ltx23-diffusers-official-runtime")
 DEFAULT_PROMPT = (
     "A cinematic aerial shot of clouds moving across a mountain ridge at sunrise"
 )
@@ -153,7 +155,8 @@ def load_model_component(
     return model.to(dtype=dtype)
 
 
-def load_pipe(model_dir: str, dtype: torch.dtype) -> LTX2Pipeline:
+
+def load_pipe(model_dir: str, dtype: torch.dtype, runtime_model_dir: str | None = None) -> LTX2Pipeline:
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         model_dir, subfolder="scheduler"
     )
@@ -219,12 +222,112 @@ def supported_call_kwargs(pipe: LTX2Pipeline, kwargs: dict[str, Any]) -> dict[st
     return {key: value for key, value in kwargs.items() if key in params and value is not None}
 
 
+
+def _save_latent_dump(path: Path, tensor: torch.Tensor, tensor_name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "latents": tensor.detach().cpu(),
+            "shape": list(tensor.shape),
+            "dtype": str(tensor.dtype),
+            "tensor_name": tensor_name,
+        },
+        path,
+    )
+
+
+@contextmanager
+def dump_stage1_initial_latents(pipe: LTX2Pipeline, dump_dir: Path | None):
+    if dump_dir is None:
+        yield
+        return
+
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    orig_prepare_latents = pipe.prepare_latents
+    orig_prepare_audio_latents = pipe.prepare_audio_latents
+    saved = {"video": False, "audio": False}
+
+    def wrapped_prepare_latents(*args: Any, **kwargs: Any):
+        out = orig_prepare_latents(*args, **kwargs)
+        if not saved["video"]:
+            _save_latent_dump(
+                dump_dir / "diffusers_stage1_video_initial.pt", out, "video"
+            )
+            saved["video"] = True
+        return out
+
+    def wrapped_prepare_audio_latents(*args: Any, **kwargs: Any):
+        out = orig_prepare_audio_latents(*args, **kwargs)
+        if not saved["audio"]:
+            _save_latent_dump(
+                dump_dir / "diffusers_stage1_audio_initial.pt", out, "audio"
+            )
+            saved["audio"] = True
+        return out
+
+    pipe.prepare_latents = wrapped_prepare_latents  # type: ignore[method-assign]
+    pipe.prepare_audio_latents = wrapped_prepare_audio_latents  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        pipe.prepare_latents = orig_prepare_latents  # type: ignore[method-assign]
+        pipe.prepare_audio_latents = orig_prepare_audio_latents  # type: ignore[method-assign]
+
+
+
+@contextmanager
+def dump_stage2_renoise_latents(pipe: LTX2Pipeline, dump_dir: Path | None):
+    if dump_dir is None:
+        yield
+        return
+
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    orig_create_noised_state = pipe._create_noised_state
+    call_index = {"value": 0}
+
+    def wrapped_create_noised_state(
+        latents: torch.Tensor,
+        noise_scale: float | torch.Tensor,
+        generator: torch.Generator | None = None,
+    ):
+        out = orig_create_noised_state(latents, noise_scale, generator)
+        try:
+            scale = float(noise_scale.item() if isinstance(noise_scale, torch.Tensor) else noise_scale)
+        except Exception:
+            scale = 0.0
+        if scale != 0.0:
+            tensor_name = "video" if call_index["value"] == 0 else "audio"
+            noise = (out.float() - latents.float() * (1.0 - scale)) / scale
+            _save_latent_dump(
+                dump_dir / f"diffusers_stage2_{tensor_name}_noise.pt",
+                noise,
+                f"{tensor_name}_noise",
+            )
+            _save_latent_dump(
+                dump_dir / f"diffusers_stage2_{tensor_name}_initial.pt",
+                out,
+                f"{tensor_name}_initial",
+            )
+        call_index["value"] += 1
+        return out
+
+    pipe._create_noised_state = wrapped_create_noised_state  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        pipe._create_noised_state = orig_create_noised_state  # type: ignore[method-assign]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-dir", default=DEFAULT_MODEL_DIR, required=DEFAULT_MODEL_DIR is None)
+    parser.add_argument("--runtime-model-dir", default=DEFAULT_RUNTIME_MODEL_DIR)
     parser.add_argument("--pretrained-model-id", default="")
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-video-path", default="")
+    parser.add_argument("--dump-stage1-initial-latents-dir", default="")
+    parser.add_argument("--dump-stage2-renoise-dir", default="")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--negative-prompt", default=DEFAULT_NEGATIVE_PROMPT)
     parser.add_argument("--width", type=int, default=1920)
@@ -246,6 +349,7 @@ def main() -> None:
     parser.add_argument("--stage1-steps", type=int, default=30)
     parser.add_argument("--stage2-steps", type=int, default=3)
     parser.add_argument("--stage2-sigmas", type=float, nargs="+", default=DEFAULT_STAGE2_SIGMAS)
+    parser.add_argument("--distilled-lora-path", default="")
     parser.add_argument("--stage1-lora-strength", type=float, default=0.0)
     parser.add_argument("--stage2-lora-strength", type=float, default=1.0)
     parser.add_argument("--dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
@@ -264,7 +368,21 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     dtype = parse_dtype(args.dtype)
     model_dir = os.path.abspath(args.model_dir)
-    lora_path = os.path.join(model_dir, "ltx-2.3-22b-distilled-lora-384.safetensors")
+    lora_path = (
+        os.path.abspath(args.distilled_lora_path)
+        if args.distilled_lora_path
+        else os.path.join(
+            model_dir, "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+        )
+    )
+    if (
+        args.stage1_lora_strength != 0.0 or args.stage2_lora_strength != 0.0
+    ) and not os.path.exists(lora_path):
+        raise FileNotFoundError(
+            "Distilled LoRA is required for the requested LoRA strength but was "
+            f"not found at {lora_path}. Pass --distilled-lora-path or materialize "
+            "ltx-2.3-22b-distilled-lora-384-1.1.safetensors."
+        )
     upsampler_path = os.path.join(model_dir, "ltx-2.3-spatial-upscaler-x2-1.1.safetensors")
 
     torch.set_grad_enabled(False)
@@ -280,7 +398,8 @@ def main() -> None:
                 local_files_only=args.local_files_only,
             )
         else:
-            pipe = load_pipe(model_dir, dtype=dtype)
+            runtime_model_dir = os.path.abspath(args.runtime_model_dir) if args.runtime_model_dir else None
+            pipe = load_pipe(model_dir, dtype=dtype, runtime_model_dir=runtime_model_dir)
         latent_upsampler = load_latent_upsampler(upsampler_path, dtype=dtype)
         upsample_pipe = LTX2LatentUpsamplePipeline(
             vae=pipe.vae, latent_upsampler=latent_upsampler
@@ -302,13 +421,16 @@ def main() -> None:
             if args.compile_dynamic != "none":
                 compile_kwargs["dynamic"] = args.compile_dynamic == "true"
             pipe.transformer.compile(**compile_kwargs)
+        stage1_scheduler_config = dict(pipe.scheduler.config)
+        stage2_scheduler_config = dict(pipe.scheduler.config)
 
-    generator = torch.Generator(device=args.device).manual_seed(args.seed)
     half_height = args.height // 2
     half_width = args.width // 2
 
     def run_once(run_label: str) -> dict[str, Any]:
         run_timings: dict[str, float] = {}
+        generator = torch.Generator(device=args.device).manual_seed(args.seed)
+        should_save_video = bool(args.output_video_path) and run_label == "actual"
         with ForwardTimer(pipe.transformer, enabled=not args.compile_transformer) as forward_timer:
             if hasattr(pipe, "get_active_adapters") and pipe.get_active_adapters():
                 maybe_set_adapter(pipe, "distilled", args.stage1_lora_strength)
@@ -318,35 +440,44 @@ def main() -> None:
                         pipe.load_lora_weights(lora_path, adapter_name="distilled")
                 maybe_set_adapter(pipe, "distilled", args.stage1_lora_strength)
 
+            stage1_dump_dir = (
+                Path(args.dump_stage1_initial_latents_dir)
+                if args.dump_stage1_initial_latents_dir and run_label == "actual"
+                else None
+            )
+            pipe.scheduler = FlowMatchEulerDiscreteScheduler.from_config(
+                stage1_scheduler_config
+            )
             forward_timer.phase = "stage1"
-            with cuda_timer(f"{run_label}.stage1_pipeline_s", run_timings):
-                stage1_video_latents, stage1_audio_latents = pipe(
-                    prompt=args.prompt,
-                    negative_prompt=args.negative_prompt,
-                    height=half_height,
-                    width=half_width,
-                    num_frames=args.num_frames,
-                    frame_rate=args.fps,
-                    num_inference_steps=args.stage1_steps,
-                    guidance_scale=args.guidance_scale,
-                    generator=generator,
-                    **supported_call_kwargs(
-                        pipe,
-                        {
-                            "stg_scale": args.stg_scale,
-                            "modality_scale": args.modality_scale,
-                            "guidance_rescale": args.guidance_rescale,
-                            "audio_guidance_scale": args.audio_guidance_scale,
-                            "audio_stg_scale": args.audio_stg_scale,
-                            "audio_modality_scale": args.audio_modality_scale,
-                            "audio_guidance_rescale": args.audio_guidance_rescale,
-                            "spatio_temporal_guidance_blocks": args.spatio_temporal_guidance_blocks,
-                            "use_cross_timestep": args.use_cross_timestep,
-                        },
-                    ),
-                    output_type="latent",
-                    return_dict=False,
-                )
+            with dump_stage1_initial_latents(pipe, stage1_dump_dir):
+                with cuda_timer(f"{run_label}.stage1_pipeline_s", run_timings):
+                    stage1_video_latents, stage1_audio_latents = pipe(
+                        prompt=args.prompt,
+                        negative_prompt=args.negative_prompt,
+                        height=half_height,
+                        width=half_width,
+                        num_frames=args.num_frames,
+                        frame_rate=args.fps,
+                        num_inference_steps=args.stage1_steps,
+                        guidance_scale=args.guidance_scale,
+                        generator=generator,
+                        **supported_call_kwargs(
+                            pipe,
+                            {
+                                "stg_scale": args.stg_scale,
+                                "modality_scale": args.modality_scale,
+                                "guidance_rescale": args.guidance_rescale,
+                                "audio_guidance_scale": args.audio_guidance_scale,
+                                "audio_stg_scale": args.audio_stg_scale,
+                                "audio_modality_scale": args.audio_modality_scale,
+                                "audio_guidance_rescale": args.audio_guidance_rescale,
+                                "spatio_temporal_guidance_blocks": args.spatio_temporal_guidance_blocks,
+                                "use_cross_timestep": args.use_cross_timestep,
+                            },
+                        ),
+                        output_type="latent",
+                        return_dict=False,
+                    )
 
             with cuda_timer(f"{run_label}.latent_upsample_s", run_timings):
                 upsampled_video_latents = upsample_pipe(
@@ -364,29 +495,40 @@ def main() -> None:
                     pipe.load_lora_weights(lora_path, adapter_name="distilled")
             maybe_set_adapter(pipe, "distilled", args.stage2_lora_strength)
 
+            stage2_dump_dir = (
+                Path(args.dump_stage2_renoise_dir)
+                if args.dump_stage2_renoise_dir and run_label == "actual"
+                else None
+            )
             forward_timer.phase = "stage2"
-            with cuda_timer(f"{run_label}.stage2_pipeline_s", run_timings):
-                stage2_video_latents, stage2_audio_latents = pipe(
-                    prompt=args.prompt,
-                    negative_prompt=args.negative_prompt,
-                    height=args.height,
-                    width=args.width,
-                    num_frames=args.num_frames,
-                    frame_rate=args.fps,
-                    num_inference_steps=args.stage2_steps,
-                    sigmas=args.stage2_sigmas,
-                    guidance_scale=(
-                        args.stage2_guidance_scale
-                        if args.stage2_guidance_scale is not None
-                        else args.guidance_scale
-                    ),
-                    noise_scale=float(args.stage2_sigmas[0]),
-                    latents=upsampled_video_latents,
-                    audio_latents=stage1_audio_latents,
-                    generator=generator,
-                    output_type="latent",
-                    return_dict=False,
-                )
+            pipe.scheduler = FlowMatchEulerDiscreteScheduler.from_config(
+                stage2_scheduler_config,
+                use_dynamic_shifting=False,
+                shift_terminal=None,
+            )
+            with dump_stage2_renoise_latents(pipe, stage2_dump_dir):
+                with cuda_timer(f"{run_label}.stage2_pipeline_s", run_timings):
+                    stage2_video_latents, stage2_audio_latents = pipe(
+                        prompt=args.prompt,
+                        negative_prompt=args.negative_prompt,
+                        height=args.height,
+                        width=args.width,
+                        num_frames=args.num_frames,
+                        frame_rate=args.fps,
+                        num_inference_steps=args.stage2_steps,
+                        sigmas=args.stage2_sigmas,
+                        guidance_scale=(
+                            args.stage2_guidance_scale
+                            if args.stage2_guidance_scale is not None
+                            else args.guidance_scale
+                        ),
+                        noise_scale=float(args.stage2_sigmas[0]),
+                        latents=upsampled_video_latents,
+                        audio_latents=stage1_audio_latents,
+                        generator=generator,
+                        output_type="latent",
+                        return_dict=False,
+                    )
 
             with cuda_timer(f"{run_label}.video_vae_decode_s", run_timings):
                 decode_timestep = None
@@ -399,6 +541,19 @@ def main() -> None:
                     decode_timestep,
                     return_dict=False,
                 )[0]
+
+            if should_save_video:
+                output_video_path = Path(args.output_video_path)
+                output_video_path.parent.mkdir(parents=True, exist_ok=True)
+                with cuda_timer(f"{run_label}.video_postprocess_save_s", run_timings):
+                    frames = pipe.video_processor.postprocess_video(_video, output_type="np")[0]
+                    export_to_video(
+                        frames,
+                        str(output_video_path),
+                        fps=int(args.fps),
+                        quality=8,
+                        macro_block_size=1,
+                    )
 
         stage1_key = f"{run_label}.stage1_pipeline_s"
         stage2_key = f"{run_label}.stage2_pipeline_s"
@@ -440,9 +595,14 @@ def main() -> None:
         {
             "load_timings_s": timings,
             "model_dir": model_dir,
+            "runtime_model_dir": os.path.abspath(args.runtime_model_dir) if args.runtime_model_dir else None,
             "pretrained_model_id": args.pretrained_model_id,
             "lora_path": lora_path,
             "upsampler_path": upsampler_path,
+            "stage2_scheduler_reset": {
+                "use_dynamic_shifting": False,
+                "shift_terminal": None,
+            },
             "diffusers_version": __import__("diffusers").__version__,
             "torch_version": torch.__version__,
             "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else args.device,

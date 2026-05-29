@@ -5,9 +5,9 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --exclusive
 #SBATCH -t 03:00:00
-#SBATCH -J ltx23-fp4-pw
-#SBATCH -o outputs/slurm/ltx23-fp4-pw-%j.out
-#SBATCH -e outputs/slurm/ltx23-fp4-pw-%j.err
+#SBATCH -J ltx23-4way-bf16
+#SBATCH -o outputs/slurm/ltx23-4way-bf16-%j.out
+#SBATCH -e outputs/slurm/ltx23-4way-bf16-%j.err
 
 set -euo pipefail
 
@@ -33,40 +33,60 @@ export SGLANG_LTX2_FUSED_AUDIO_QKVG=1
 export SGLANG_LTX2_COMPILE_TILED_VAE_DECODER=1
 export SGLANG_LTX2_VAE_COMPILE_MODE="${SGLANG_LTX2_VAE_COMPILE_MODE:-max-autotune-no-cudagraphs}"
 export SGLANG_LTX2_SHARE_GUIDANCE_PREFIX=1
-export SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND="${SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND:-cudnn}"
-export SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND="${SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND:-flashinfer}"
-export SGLANG_LTX2_FP4_FUSED_PROJ_IN_BIAS_GELU="${SGLANG_LTX2_FP4_FUSED_PROJ_IN_BIAS_GELU:-1}"
-export SGLANG_LTX2_FP4_FUSED_PROJ_OUT_BIAS_GATE="${SGLANG_LTX2_FP4_FUSED_PROJ_OUT_BIAS_GATE:-1}"
-export SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE="${SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE:-1}"
+
+# Match ltx-sparse-attn-bringup semantics when MODE=bf16_sparse.
 export SGLANG_PIECEWISE_ATTN_SPARSITY="${SGLANG_PIECEWISE_ATTN_SPARSITY:-0.9}"
 export SGLANG_PIECEWISE_ATTN_BLOCK_SIZE="${SGLANG_PIECEWISE_ATTN_BLOCK_SIZE:-64}"
 export SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF="${SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF:-true}"
 export SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER="${SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER:-true}"
 export SGLANG_PIECEWISE_ATTN_ROUTE_MODE="${SGLANG_PIECEWISE_ATTN_ROUTE_MODE:-score}"
 
+MODE="${MODE:-bf16_dense}"
 PROMPT="${PROMPT:-A cinematic aerial shot of clouds moving across a mountain ridge at sunrise}"
-OUT_DIR="${OUT_DIR:-outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-scoreapprox-s09-b64-fp4biasgelu-projoutgate-pipeline}"
+OUT_DIR="${OUT_DIR:-outputs/ltx23-dev-1080p10s-fourway-bf16-${MODE}}"
 mkdir -p outputs/slurm "$OUT_DIR"
 
-if [[ "${SGLANG_DIFFUSION_LTX2_EVENT_PROFILE:-0}" == "1" ]]; then
-  export SGLANG_DIFFUSION_LTX2_PROFILE_PATH="${SGLANG_DIFFUSION_LTX2_PROFILE_PATH:-$OUT_DIR/ltx2_event_profile.json}"
+COMMON_ARGS=(
+  --model-path Lightricks/LTX-2.3
+  --backend auto
+  --pipeline-class-name LTX2TwoStagePipeline
+  --num-gpus 1
+  --performance-mode speed
+  --ltx2-two-stage-device-mode resident
+  --warmup true
+  --warmup-steps 30
+  --height 1088
+  --width 1920
+  --num-frames 241
+  --fps 24
+  --seed 42
+  --num-inference-steps 30
+  --guidance-scale 3.0
+  --prompt "$PROMPT"
+  --return-file-paths-only true
+)
+
+if [[ "$MODE" == "bf16_sparse" ]]; then
+  COMMON_ARGS+=(--attention-backend piecewise_attn)
+elif [[ "$MODE" != "bf16_dense" ]]; then
+  echo "Unsupported MODE=$MODE" >&2
+  exit 2
 fi
 
-.conda/ltx23/bin/python -m sglang.multimodal_gen.runtime.entrypoints.cli.main generate   --model-path Lightricks/LTX-2.3   --backend auto   --attention-backend piecewise_attn   --pipeline-class-name LTX2TwoStagePipeline   --num-gpus 1   --performance-mode speed   --ltx2-two-stage-device-mode resident   --warmup true   --warmup-steps 30   --height 1088   --width 1920   --num-frames 241   --fps 24   --seed 42   --num-inference-steps 30   --guidance-scale 3.0   --prompt "$PROMPT"   --return-file-paths-only true   --component-paths.transformer outputs/ltx23-selective-nvfp4-video-attn-ffn-transformer-mat   --component-paths.transformer_2 outputs/ltx23-selective-nvfp4-video-attn-ffn-stage2-lora-transformer-mat   --output-file-path "$OUT_DIR/out.mp4"   --perf-dump-path "$OUT_DIR/perf.json"
+.conda/ltx23/bin/python -m sglang.multimodal_gen.runtime.entrypoints.cli.main generate \
+  "${COMMON_ARGS[@]}" \
+  --output-file-path "$OUT_DIR/out.mp4" \
+  --perf-dump-path "$OUT_DIR/perf.json"
 
 .conda/ltx23/bin/python - <<'PY2'
 import json, os
-out_dir = os.environ.get('OUT_DIR', 'outputs/ltx23-dev-1080p10s-nvfp4-video-attn-ffn-piecewise-scoreapprox-s09-b64-fp4biasgelu-projoutgate-pipeline')
+out_dir = os.environ['OUT_DIR']
 path = os.path.join(out_dir, 'perf.json')
 d = json.load(open(path))
 steps = {x['name']: x['duration_ms'] for x in d.get('steps', [])}
 summary = {
     'output_dir': out_dir,
-    'fp4_quantize_backend': os.environ.get('SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND'),
-    'fp4_gemm_backend': os.environ.get('SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND'),
-    'fp4_fused_proj_in_bias_gelu': os.environ.get('SGLANG_LTX2_FP4_FUSED_PROJ_IN_BIAS_GELU'),
-    'fp4_fused_proj_out_bias_gate': os.environ.get('SGLANG_LTX2_FP4_FUSED_PROJ_OUT_BIAS_GATE'),
-    'fp4_fused_attn_to_out_bias_gate': os.environ.get('SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE'),
+    'mode': os.environ.get('MODE'),
     'piecewise_sparsity': os.environ.get('SGLANG_PIECEWISE_ATTN_SPARSITY'),
     'piecewise_block_size': os.environ.get('SGLANG_PIECEWISE_ATTN_BLOCK_SIZE'),
     'piecewise_only_video_self': os.environ.get('SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF'),
@@ -77,7 +97,6 @@ summary = {
     'refine_s': steps.get('LTX2RefinementStage', 0) / 1000,
     'dit_s': (steps.get('LTX2AVDenoisingStage', 0) + steps.get('LTX2RefinementStage', 0)) / 1000,
     'decode_s': steps.get('LTX2AVDecodingStage', 0) / 1000,
-    'speedup_vs_59_332': 59.332 / (d.get('total_duration_ms', 0) / 1000),
 }
 open(os.path.join(out_dir, 'summary.json'), 'w').write(json.dumps(summary, indent=2) + '\n')
 print(json.dumps(summary, indent=2))

@@ -719,3 +719,181 @@ CODA-style roadmap 适合处理 GEMM 周围的 epilogue、norm、activation、re
 - 利用 CFG/STG branch 在 prefix 阶段的等价性减少重复 branch 计算。
 
 对前面的 fusion-only 版本而言，没有采用 approximate attention、step skipping、LoRA 改写、scheduler 改写或 stage 设计改写；提升来自实现层面的 kernel/graph 调度优化。后续 sparse/NVFP4 叠加版本已经引入算法层面的低精度和 sparse attention 折中，需按第 12/13 节单独看待。
+
+## Bringup 对齐 Sparse 对比（2026-05-28）
+
+本节用于记录 `ltx-sparse-attn-bringup` sparse attention 语义对齐后的 1080p/10s 单卡结果。这里不使用前面最快的 `local exact s=0.999,b=32`，而是使用 bringup branch 的 score-routed piecewise setting：
+
+```bash
+SGLANG_PIECEWISE_ATTN_SPARSITY=0.9
+SGLANG_PIECEWISE_ATTN_BLOCK_SIZE=64
+SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER=true
+SGLANG_PIECEWISE_ATTN_ROUTE_MODE=score
+SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF=true
+```
+
+对齐后的脚本：
+
+```text
+scripts/slurm_ltx23_best_nvfp4_piecewise_1080p10s.sh
+```
+
+对比口径：baseline 是 dense NVFP4 + fusion，不启用 `piecewise_attn`；optimized 是同一套 NVFP4 + fusion 加 bringup-style score-routed sparse attention。两者使用同一 prompt、seed、1088x1920、241 frames、30 inference steps、guidance scale 3.0、单卡运行。
+
+| 方案 | total | denoise | refine | DIT | decode | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline dense NVFP4 + fusion | `51.115s` | `39.199s` | `8.568s` | `47.766s` | `3.184s` | `1.000x` |
+| optimized + bringup sparse `s=0.9,b=64,score,approx=true` | `42.722s` | `34.131s` | `5.497s` | `39.628s` | `2.928s` | `1.196x` |
+
+性能证据文件：
+
+```text
+outputs/ltx23-dev-1080p10s-compare-baseline-dense-nvfp4-fusion/perf.json
+outputs/ltx23-dev-1080p10s-compare-baseline-dense-nvfp4-fusion/summary.json
+outputs/ltx23-dev-1080p10s-compare-optimized-bringup-sparse-s09-b64/perf.json
+outputs/ltx23-dev-1080p10s-compare-optimized-bringup-sparse-s09-b64/summary.json
+```
+
+画面对比视频：
+
+```text
+outputs/ltx23-dev-1080p10s-compare-baseline-vs-bringup-sparse-side-by-side.mp4
+```
+
+该 side-by-side 视频左侧是 baseline dense NVFP4 + fusion，右侧是 bringup sparse `s=0.9,b=64`；视频为 241 frames、24 fps、3840x1088。
+
+按 bringup 的 block selection 公式，Stage 1 video self-attention 典型形状 `T=15810,b=64` 时 `NT_KV=248`，`density=0.1` 会选 `NS=int(0.1*248)=24` 个 KV block，实际 exact density 为 `24/248=9.677%`，实际 sparsity 为 `90.323%`。未选 block 不直接丢弃，而是通过 `kc/vc` centroid approximate remainder 参与 attention。
+
+## Four-Way Video Quality And Speed Compare (2026-05-28)
+
+This comparison uses the same prompt, seed, resolution, frame count, step count, and guidance scale across four variants:
+
+- `BF16 kernel fusion`: implementation-level fusion/compile optimizations only, no NVFP4 and no sparse attention.
+- `NVFP4 dense`: selective NVFP4 + fusion, no sparse attention.
+- `BF16 + sparse`: BF16 kernel-fusion path plus `ltx-sparse-attn-bringup` score-routed sparse attention.
+- `NVFP4 + sparse`: selective NVFP4 + fusion plus `ltx-sparse-attn-bringup` score-routed sparse attention.
+
+Sparse setting for both sparse rows:
+
+```bash
+SGLANG_PIECEWISE_ATTN_SPARSITY=0.9
+SGLANG_PIECEWISE_ATTN_BLOCK_SIZE=64
+SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER=true
+SGLANG_PIECEWISE_ATTN_ROUTE_MODE=score
+SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF=true
+```
+
+| Variant | total | denoise | refine | DIT | decode | speedup vs BF16 kernel fusion |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 kernel fusion | `65.909s` | `50.265s` | `9.646s` | `59.911s` | `5.821s` | `1.000x` |
+| NVFP4 dense | `51.115s` | `39.199s` | `8.568s` | `47.766s` | `3.184s` | `1.289x` |
+| BF16 + sparse `s=0.9,b=64` | `56.681s` | `44.046s` | `6.470s` | `50.516s` | `5.995s` | `1.163x` |
+| NVFP4 + sparse `s=0.9,b=64` | `42.722s` | `34.131s` | `5.497s` | `39.628s` | `2.928s` | `1.543x` |
+
+Four-way quality/speed video:
+
+```text
+outputs/ltx23-dev-1080p10s-fourway-quality-speed-2x2.mp4
+```
+
+The four-way output is 241 frames, 24 fps, `3840x2176`. Layout is:
+
+```text
+top-left:     BF16 kernel fusion
+top-right:    NVFP4 dense
+bottom-left:  BF16 + sparse s=0.9,b=64
+bottom-right: NVFP4 + sparse s=0.9,b=64
+```
+
+Source videos and performance artifacts:
+
+```text
+outputs/ltx23-dev-1080p10s-fourway-bf16-kernel-fusion/out.mp4
+outputs/ltx23-dev-1080p10s-fourway-bf16-kernel-fusion/summary.json
+outputs/ltx23-dev-1080p10s-compare-baseline-dense-nvfp4-fusion/out.mp4
+outputs/ltx23-dev-1080p10s-compare-baseline-dense-nvfp4-fusion/summary.json
+outputs/ltx23-dev-1080p10s-fourway-bf16-bringup-sparse-s09-b64/out.mp4
+outputs/ltx23-dev-1080p10s-fourway-bf16-bringup-sparse-s09-b64/summary.json
+outputs/ltx23-dev-1080p10s-compare-optimized-bringup-sparse-s09-b64/out.mp4
+outputs/ltx23-dev-1080p10s-compare-optimized-bringup-sparse-s09-b64/summary.json
+outputs/ltx23-dev-1080p10s-fourway-quality-speed-summary.json
+```
+
+The automatic pixel-difference numbers in `fourway-quality-speed-summary.json` are only a rough reference against BF16 kernel fusion, not a perceptual quality metric. Visual judgment should use the four-way video.
+
+## KWL + Stage-2 Bringup PISA Target Audit (2026-05-28)
+
+本节记录一个严格范围的负结果：在 KWL 的基础上，只把 stage 2 transformer_2 的 video self-attention attn1 切到 origin/ltx-sparse-attn-bringup 推荐的 PISA/piecewise attention setting，是否能在 KWL <60s 基础上进一步获得端到端 1.4x。
+
+### Strict Scope
+
+复现脚本：
+
+```bash
+scripts/slurm_ltx23_kwl_pisa_matrix_1080p10s.sh
+scripts/slurm_ltx23_kwl_stage2_pisa_1080p10s.sh
+```
+
+stage2-only 模式通过 component backend 指定：
+
+```bash
+--component-attention-backends.transformer_2 piecewise_attn
+```
+
+PISA setting 与 origin/ltx-sparse-attn-bringup 默认推荐对齐：
+
+```bash
+SGLANG_PIECEWISE_ATTN_SPARSITY=0.9
+SGLANG_PIECEWISE_ATTN_BLOCK_SIZE=64
+SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF=true
+SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER=true
+SGLANG_PIECEWISE_ATTN_ROUTE_MODE=score
+```
+
+含义是 exact density 0.1，block size 64，只对 video self-attention 使用 score/top-k routing，并用 centroid approximation 处理 remainder。cross-attention、audio self-attention 和 stage 1 在 strict stage2-only run 中不切到 PISA。
+
+### Latest Same-Node Result
+
+证据文件：
+
+```text
+outputs/ltx23-kwl-pisa-matrix-compileroute-1080p10s/matrix_summary.json
+outputs/ltx23-kwl-pisa-matrix-compileroute-1080p10s/stage2_pisa_target_audit.json
+outputs/ltx23-kwl-pisa-matrix-compileroute-1080p10s/kwl-vs-stage2-pisa-side-by-side.mp4
+```
+
+| Mode | total | denoise | refine | decode | vs same-node KWL |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| KWL | 65.711s | 50.143s | 9.604s | 5.768s | 1.000x |
+| KWL + stage2 PISA | 62.002s | 50.101s | 6.284s | 5.424s | 1.060x |
+| KWL + all PISA diagnostic | 55.402s | 43.569s | 6.287s | 5.338s | 1.186x |
+
+This run also enabled a semantics-preserving route implementation optimization:
+
+```bash
+SGLANG_PIECEWISE_ATTN_COMPILE_ROUTE=1
+```
+
+It compiles the score-routing tensor expression and uses topk(sorted=False). It does not change sparsity, block size, selected-set semantics, approx_remainder, or score routing. It only changes execution order/kernel selection.
+
+### Why 1.4x Is Not Reachable Under This Strict Scope
+
+The historical KWL <60s reference is:
+
+```text
+outputs/ltx23-dev-1080p10s-speed-resident-prefix-qknorm-rope-dualmod-adavalues-all9-residual-ffn-gateout-audioqkvg-tiledvae-decode-profile/perf.json
+```
+
+- Historical KWL total: 59.332s.
+- Historical KWL refine/stage2: 8.705s.
+- Target for 1.4x: 59.332 / 1.4 = 42.380s.
+- Required saving: 16.952s.
+
+Even if the entire stage2/refine stage were free, the maximum possible speedup would be:
+
+```text
+59.332 / (59.332 - 8.705) = 1.172x
+```
+
+The requested change only touches stage2 video self-attention, which is a subset of stage2/refine, so its real upper bound is lower than 1.172x. Therefore strict stage2-only bringup PISA cannot satisfy an end-to-end 1.4x speedup target on top of KWL. Achieving 1.4x requires expanding beyond this scope, for example stage1+stage2 sparse attention, more aggressive sparse settings, or low-precision/NVFP4 paths.
+

@@ -22,6 +22,41 @@ Treat "SOTA" as "best observed, reproducible performance under the recorded
 model, workload, hardware, framework commits, precision, and SLA." Do not claim
 global SOTA without enough external evidence.
 
+
+## Repo-Specific Terminology: `kwl`
+
+In this repository, `kwl` means **kernel-wise lossless** optimization. When a user
+asks for the `kwl` method/path/result, interpret it as the LTX 2.3 lossless
+kernel/runtime-only optimization path, not as a generic performance mode.
+
+A `kwl` change may use kernel fusion, equivalent runtime sharing, shape-specific
+fast paths, `torch.compile`/CUDA-graph style launch reduction, or layout-preserving
+post-kernel cleanup when the sampled trajectory and model semantics are unchanged.
+A `kwl` change must not use algorithm-level shortcuts or quality-changing methods,
+including sparse attention, NVFP4/FP4/FP8 quantization, pruning, step reduction,
+CFG/scheduler changes, prompt/negative-prompt changes, LoRA changes, or initial-noise
+layout changes. Kernel-level numeric differences are acceptable; semantic pipeline
+differences are not.
+
+For LTX 2.3, the reference `kwl` record is documented in `README.md` under
+"LTX 2.3 1080p10s Lossless Kernel-Only Record": branch `ltx2-dit-fusion-report`,
+record commit `b801a27ce6e760f788c06daaa0cec18360d9722f`, single GPU,
+`1920x1088`, `241` frames, `24` fps, `30` steps, `guidance_scale=3.0`, warmed
+end-to-end time `59.33s`, and core time through VAE decode `54.915s`.
+
+Reference artifacts and entry points for that `kwl` record:
+
+- profile: `outputs/ltx23-dev-1080p10s-speed-resident-prefix-qknorm-rope-dualmod-adavalues-all9-residual-ffn-gateout-audioqkvg-tiledvae-decode-profile/perf.json`
+- launch script: `outputs/slurm/ltx23_all9_gateout_audioqkvg_prefix_tiledvae_decode_profile_1080p.sbatch`
+- launch log: `outputs/slurm/ltx23-prefix-decode-1080-2896582.out`
+- primary code: `python/sglang/multimodal_gen/runtime/models/dits/ltx_2.py`,
+  `python/sglang/multimodal_gen/runtime/pipelines_core/stages/denoising_av.py`,
+  `python/sglang/multimodal_gen/runtime/pipelines_core/stages/decoding_av.py`
+
+When comparing `kwl` against other variants, keep `kwl` separate from lossy or
+algorithm-changing paths such as `nvfp4`, `sparse attention`, or `nvfp4+sparse`.
+Use `kwl` as the lossless SGLang optimized baseline.
+
 ## Required Companion Reads
 
 Before a real run, read only the needed sections from:
