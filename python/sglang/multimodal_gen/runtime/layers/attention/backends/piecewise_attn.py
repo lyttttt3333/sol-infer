@@ -1029,6 +1029,37 @@ class PiecewiseAttentionImpl(AttentionImpl):
             density = 1.0 - float(sparsity)
         self.density = min(1.0, max(0.0, float(density)))
 
+        stage1_schedule = cfg.get("piecewise_stage1_schedule", None)
+        if stage1_schedule is None:
+            stage1_schedule = os.environ.get(
+                "SGLANG_PIECEWISE_ATTN_STAGE1_SCHEDULE", "false"
+            )
+        self.stage1_schedule = str(stage1_schedule).lower() not in (
+            "0",
+            "false",
+            "no",
+        )
+
+        dense_steps = cfg.get("piecewise_stage1_dense_steps", None)
+        if dense_steps is None:
+            dense_steps = os.environ.get(
+                "SGLANG_PIECEWISE_ATTN_STAGE1_DENSE_STEPS", "5"
+            )
+        self.stage1_dense_steps = max(0, int(dense_steps))
+
+        start_sparsity = cfg.get("piecewise_stage1_start_sparsity", None)
+        if start_sparsity is None:
+            start_sparsity = os.environ.get(
+                "SGLANG_PIECEWISE_ATTN_STAGE1_START_SPARSITY", "0.8"
+            )
+        end_sparsity = cfg.get("piecewise_stage1_end_sparsity", None)
+        if end_sparsity is None:
+            end_sparsity = os.environ.get(
+                "SGLANG_PIECEWISE_ATTN_STAGE1_END_SPARSITY", "0.9"
+            )
+        self.stage1_start_sparsity = min(1.0, max(0.0, float(start_sparsity)))
+        self.stage1_end_sparsity = min(1.0, max(0.0, float(end_sparsity)))
+
         block_size = cfg.get("piecewise_block_size", None)
         if block_size is None:
             block_size = os.environ.get("SGLANG_PIECEWISE_ATTN_BLOCK_SIZE", "64")
@@ -1069,11 +1100,38 @@ class PiecewiseAttentionImpl(AttentionImpl):
             f"block_size={self.block_size} "
             f"only_video_self={self.only_video_self_attention} "
             f"approx_remainder={self.approx_remainder} "
-            f"route_mode={self.route_mode}"
+            f"route_mode={self.route_mode} "
+            f"stage1_schedule={self.stage1_schedule}"
         )
 
+    def _density_for_step(self, attn_metadata: AttentionMetadata | None) -> float:
+        if not self.stage1_schedule or attn_metadata is None:
+            return self.density
+
+        stage = getattr(attn_metadata, "ltx2_stage", None)
+        if stage != "stage1":
+            return self.density
+
+        step_value = getattr(attn_metadata, "current_timestep", 0)
+        num_steps_value = getattr(attn_metadata, "ltx2_num_steps", 0)
+        step = int(0 if step_value is None else step_value)
+        num_steps = int(0 if num_steps_value is None else num_steps_value)
+        if step < self.stage1_dense_steps:
+            return 1.0
+
+        ramp_steps = max(1, num_steps - self.stage1_dense_steps - 1)
+        progress = min(1.0, max(0.0, (step - self.stage1_dense_steps) / ramp_steps))
+        sparsity = self.stage1_start_sparsity + progress * (
+            self.stage1_end_sparsity - self.stage1_start_sparsity
+        )
+        return min(1.0, max(0.0, 1.0 - sparsity))
+
     def _should_use_piecewise(
-        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        density: float,
     ) -> bool:
         if self.dropout != 0.0 or self.causal:
             return False
@@ -1087,7 +1145,7 @@ class PiecewiseAttentionImpl(AttentionImpl):
             ".attn1.attn" not in self.prefix or ".audio_attn1." in self.prefix
         ):
             return False
-        if self.density >= 1.0:
+        if density >= 1.0:
             return False
         return True
 
@@ -1130,10 +1188,15 @@ class PiecewiseAttentionImpl(AttentionImpl):
         value: torch.Tensor,
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
-        if not self._should_use_piecewise(query, key, value):
+        density = self._density_for_step(attn_metadata)
+        if not self._should_use_piecewise(query, key, value, density):
             return self._dense_sdpa(query, key, value, attn_metadata)
 
-        logger.debug("Piecewise attention active for %s", self.prefix or "<unknown>")
+        logger.debug(
+            "Piecewise attention active for %s density=%.6f",
+            self.prefix or "<unknown>",
+            density,
+        )
         q = query.transpose(1, 2).contiguous()
         k = key.transpose(1, 2).contiguous()
         v = value.transpose(1, 2).contiguous()
@@ -1169,7 +1232,7 @@ class PiecewiseAttentionImpl(AttentionImpl):
                     qc=qc,
                     kc=kc,
                     k_var=k_var,
-                    density=self.density,
+                    density=density,
                     scale=self.softmax_scale,
                 )
                 nt_kv = kc.shape[2]

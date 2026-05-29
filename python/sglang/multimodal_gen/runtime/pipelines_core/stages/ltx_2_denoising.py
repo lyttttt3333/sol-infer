@@ -2278,7 +2278,12 @@ class LTX2DenoisingStage(DenoisingStage):
     ):
         """Preserve the legacy LTX-2 attention-metadata contract."""
         # Legacy LTX-2 paths used the plain attention-metadata builder call here.
-        return self._build_attn_metadata(step_index, batch, server_args)
+        attn_metadata = self._build_attn_metadata(step_index, batch, server_args)
+        if attn_metadata is not None:
+            setattr(attn_metadata, "current_timestep", step_index)
+            setattr(attn_metadata, "ltx2_stage", ctx.stage)
+            setattr(attn_metadata, "ltx2_num_steps", int(timesteps_cpu.shape[0]))
+        return attn_metadata
 
     def _run_denoising_step(
         self,
