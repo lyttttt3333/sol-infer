@@ -211,18 +211,18 @@ class BaseLayerWithLoRA(nn.Module):
                 scale *= lora_alpha / lora_rank
 
             if not isinstance(lora_B_sliced, torch.Tensor):
-                lora_delta = lora_B_sliced @ lora_A_sliced
+                lora_delta = (lora_B_sliced * scale) @ lora_A_sliced
                 if isinstance(lora_delta, torch.Tensor) and lora_delta.dim() > 2:
                     lora_delta = lora_delta.reshape(-1, lora_delta.shape[-1])
-                data.add_(lora_delta, alpha=scale)
+                data.add_(lora_delta)
                 continue
 
             if lora_A_sliced.dim() > 2 or lora_B_sliced.dim() > 2:
-                lora_delta = lora_B_sliced @ lora_A_sliced
+                lora_delta = (lora_B_sliced * scale) @ lora_A_sliced
                 if lora_delta.dim() > 2:
                     lora_delta = lora_delta.reshape(-1, lora_delta.shape[-1])
                 data_2d = data.reshape(-1, data.shape[-1]) if data.dim() > 2 else data
-                data_2d.add_(lora_delta, alpha=scale)
+                data_2d.add_(lora_delta)
                 continue
 
             data_2d = data.reshape(-1, data.shape[-1]) if data.dim() > 2 else data
@@ -239,8 +239,8 @@ class BaseLayerWithLoRA(nn.Module):
             )
             for start in range(0, lora_B_2d.shape[0], chunk_rows):
                 end = min(start + chunk_rows, lora_B_2d.shape[0])
-                chunk_delta = lora_B_2d[start:end] @ lora_A_sliced
-                data_2d[start:end].add_(chunk_delta, alpha=scale)
+                chunk_delta = (lora_B_2d[start:end] * scale) @ lora_A_sliced
+                data_2d[start:end].add_(chunk_delta)
 
     def _should_merge_in_fp32(
         self,

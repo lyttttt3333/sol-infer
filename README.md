@@ -117,6 +117,36 @@ export SGLANG_LTX2_SHARE_GUIDANCE_PREFIX=1
 export SGLANG_DIFFUSION_DECODE_PROFILE=1
 ```
 
+
+### LTX 2.3 HQ KWL + Sparse Attention + PAB Cache
+
+The current HQ path and lossy acceleration matrix are documented in
+`docs/ltx23_sglang_hq_variants.md`. The unified runner is:
+
+```bash
+bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_sparse_cache
+```
+
+Validated 1080p 10s HQ matrix, warmup excluded, seed `42`, `15` stage-1 steps
+and `3` stage-2 refinement steps:
+
+- `kwl`: `69.120s` total, `63.646s` denoise.
+- `kwl_cache`: `60.598s` total, `55.075s` denoise.
+- `kwl_sparse`: `61.405s` total, `56.008s` denoise.
+- `kwl_sparse_cache`: `53.778s` total, `48.004s` denoise, `1.285x` total speedup vs KWL.
+
+Best setting: piecewise sparse video self-attention with layer `0` dense and
+first `3` stage-1 steps dense, plus PAB attention-output cache from stage-1 step
+`6`; stage-2 PAB is disabled by default because full-resolution cached attention
+outputs OOM on single-card resident HQ inference.
+
+Artifacts:
+
+```bash
+outputs/ltx23-sglang-hq-kwl-sparse-cache-matrix-pab6-stage2off-1080p10s/benchmark_summary.json
+outputs/ltx23-sglang-hq-kwl-sparse-cache-matrix-pab6-stage2off-1080p10s/kwl-vs-kwl-sparse-cache-side-by-side.mp4
+```
+
 ## Adoption and Sponsorship
 SGLang has been deployed at large scale, generating trillions of tokens in production each day. It is trusted and adopted by a wide range of leading enterprises and institutions, including xAI, AMD, NVIDIA, Intel, LinkedIn, Cursor, Oracle Cloud, Google Cloud, Microsoft Azure, AWS, Atlas Cloud, Voltage Park, Nebius, DataCrunch, Novita, InnoMatrix, MIT, UCLA, the University of Washington, Stanford, UC Berkeley, Tsinghua University, Jam & Tea Studios, Baseten, and other major technology organizations.
 As an open-source LLM inference engine, SGLang has become the de facto industry standard, with deployments running on over 400,000 GPUs worldwide.

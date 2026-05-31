@@ -80,6 +80,9 @@ def _resolve_ltx2_two_stage_component_paths(
     if "distilled_lora" not in resolved:
         distilled_lora_candidates = [
             os.path.join(model_path, "ltx-2.3-20b-distilled-lora-384.safetensors"),
+            os.path.join(
+                model_path, "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+            ),
             os.path.join(model_path, "ltx-2.3-22b-distilled-lora-384.safetensors"),
             os.path.join(model_path, "ltx-2-19b-distilled-lora-384.safetensors"),
         ]

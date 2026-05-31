@@ -30,11 +30,16 @@ def _load_saved_stage2_noise(
     if isinstance(payload, torch.Tensor):
         tensor = payload
     elif isinstance(payload, dict):
-        tensor = payload.get("latents")
+        tensor = None
+        for key in (tensor_name, "noise", "latents"):
+            value = payload.get(key)
+            if isinstance(value, torch.Tensor):
+                tensor = value
+                break
         if not isinstance(tensor, torch.Tensor):
-            tensor = payload.get(tensor_name)
-        if not isinstance(tensor, torch.Tensor):
-            raise ValueError(f"{path} does not contain a tensor under latents/{tensor_name}")
+            raise ValueError(
+                f"{path} does not contain a tensor under {tensor_name}/noise/latents"
+            )
     else:
         raise TypeError(f"{path} contains unsupported payload type {type(payload)!r}")
     if tuple(tensor.shape) != tuple(reference_tensor.shape):
@@ -447,5 +452,18 @@ class LTX2RefinementStage(LTX2AVDenoisingStage):
             batch.num_inference_steps = original_batch_num_inference_steps
             batch.do_classifier_free_guidance = original_do_cfg
             batch.ltx2_ti2v_clean_latent_background = original_clean_latent_background
+
+        dump_dir = os.environ.get("SGLANG_LTX2_DUMP_STAGE2_FINAL_DIR") or os.environ.get(
+            "SGLANG_LTX2_DUMP_STAGE2_DEBUG_DIR"
+        )
+        if dump_dir:
+            os.makedirs(dump_dir, exist_ok=True)
+            payload = {}
+            if isinstance(batch.latents, torch.Tensor):
+                payload["video_stage2_final"] = batch.latents.detach().cpu()
+            if isinstance(batch.audio_latents, torch.Tensor):
+                payload["audio_stage2_final"] = batch.audio_latents.detach().cpu()
+            if payload:
+                torch.save(payload, os.path.join(dump_dir, "sglang_stage2_final.pt"))
 
         return batch

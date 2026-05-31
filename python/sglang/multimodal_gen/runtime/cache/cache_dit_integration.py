@@ -35,6 +35,10 @@ from cache_dit.parallelism import ParallelismBackend, ParallelismConfig
 
 from sglang.multimodal_gen.runtime.distributed.parallel_state import get_dit_group
 
+# Side-effect import: register the SGLang-owned LTX2 BlockAdapter before
+# cache-dit checks BlockAdapterRegister support.
+from sglang.multimodal_gen.runtime.cache import ltx2_block_adapter  # noqa: F401
+
 _original_similarity = None
 
 

@@ -44,6 +44,7 @@ from sglang.multimodal_gen.runtime.managers.memory_managers.layerwise_offload im
 )
 from sglang.multimodal_gen.runtime.models.dits.base import CachableDiT
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
+from sglang.multimodal_gen.runtime.utils.dit_activation_dump import dump_attention_debug_from_env
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
@@ -86,6 +87,12 @@ _LTX2_SPLIT_ROPE_INPLACE = None
 _LTX2_SPLIT_ROPE_QK_INPLACE = None
 _LTX2_SPLIT_ROPE_INPLACE_UNAVAILABLE = False
 _LTX2_SPLIT_ROPE_QK_INPLACE_UNAVAILABLE = False
+_LTX2_TE_NVFP4_RECIPE = None
+_LTX2_TE_NVFP4_LINEAR_CLS = None
+_LTX2_TE_NVFP4_FP8_AUTOCAST = None
+_LTX2_TE_NVFP4_IMPORT_FAILED = False
+_LTX2_TE_NVFP4_RUNTIME_DISABLED = False
+_LTX2_TE_NVFP4_WARNING_EMITTED = False
 
 
 def _ltx2_record_functions_enabled() -> bool:
@@ -694,6 +701,10 @@ def _ltx2_fused_qknorm_enabled() -> bool:
     return os.environ.get("SGLANG_LTX2_FUSED_QKNORM", "0") == "1"
 
 
+def _ltx2_official_fa4_attention_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_OFFICIAL_FA4_ATTENTION", "0") == "1"
+
+
 def _ltx2_fused_qknorm_rope_enabled() -> bool:
     return os.environ.get("SGLANG_LTX2_FUSED_QKNORM_ROPE", "0") == "1"
 
@@ -766,6 +777,10 @@ def _ltx2_fp4_fused_attn_to_out_bias_gate_enabled() -> bool:
     return os.environ.get("SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE", "0") == "1"
 
 
+def _ltx2_te_nvfp4_video_ffn_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_TE_NVFP4_VIDEO_FFN", "0") == "1"
+
+
 def _ltx2_compile_gate_to_out_enabled() -> bool:
     return os.environ.get("SGLANG_LTX2_COMPILE_GATE_TO_OUT", "0") == "1"
 
@@ -785,6 +800,60 @@ def _ltx2_linear_base_for_fusion(layer: nn.Module) -> nn.Module | None:
     ):
         return None
     return base_layer
+
+
+def _ltx2_env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).lower() in ("1", "true", "yes", "on")
+
+
+def _ltx2_get_te_nvfp4_context():
+    global _LTX2_TE_NVFP4_RECIPE
+    global _LTX2_TE_NVFP4_LINEAR_CLS
+    global _LTX2_TE_NVFP4_FP8_AUTOCAST
+    global _LTX2_TE_NVFP4_IMPORT_FAILED
+    global _LTX2_TE_NVFP4_RUNTIME_DISABLED
+    global _LTX2_TE_NVFP4_WARNING_EMITTED
+
+    if _LTX2_TE_NVFP4_RUNTIME_DISABLED or _LTX2_TE_NVFP4_IMPORT_FAILED:
+        return None
+
+    try:
+        if (
+            _LTX2_TE_NVFP4_RECIPE is None
+            or _LTX2_TE_NVFP4_LINEAR_CLS is None
+            or _LTX2_TE_NVFP4_FP8_AUTOCAST is None
+        ):
+            import transformer_engine.pytorch as te
+            from transformer_engine.common.recipe import NVFP4BlockScaling
+            from transformer_engine.pytorch import fp8_autocast
+
+            _LTX2_TE_NVFP4_LINEAR_CLS = te.Linear
+            _LTX2_TE_NVFP4_FP8_AUTOCAST = fp8_autocast
+            _LTX2_TE_NVFP4_RECIPE = NVFP4BlockScaling(
+                disable_rht=_ltx2_env_flag(
+                    "SGLANG_LTX2_TE_NVFP4_DISABLE_RHT", "1"
+                ),
+                disable_stochastic_rounding=_ltx2_env_flag(
+                    "SGLANG_LTX2_TE_NVFP4_DISABLE_STOCHASTIC_ROUNDING", "1"
+                ),
+                disable_2d_quantization=_ltx2_env_flag(
+                    "SGLANG_LTX2_TE_NVFP4_DISABLE_2D_QUANTIZATION", "1"
+                ),
+            )
+    except Exception as exc:
+        _LTX2_TE_NVFP4_IMPORT_FAILED = True
+        if not _LTX2_TE_NVFP4_WARNING_EMITTED:
+            logger.warning(
+                "Disabling LTX2 TE NVFP4 video FFN fast path: %s", exc
+            )
+            _LTX2_TE_NVFP4_WARNING_EMITTED = True
+        return None
+
+    return (
+        _LTX2_TE_NVFP4_LINEAR_CLS,
+        _LTX2_TE_NVFP4_FP8_AUTOCAST,
+        _LTX2_TE_NVFP4_RECIPE,
+    )
 
 
 _LTX2_GUIDANCE_PERTURBATION_KEYS = (
@@ -1143,6 +1212,43 @@ def _ltx2_try_fused_qknorm(
         return q, k
     except Exception as exc:
         _ltx2_disable_fused_qknorm(exc)
+        return None
+
+
+def _ltx2_try_official_fa4_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    profile_prefix: str,
+) -> torch.Tensor | None:
+    if (
+        not _ltx2_official_fa4_attention_enabled()
+        or get_tp_world_size() != 1
+        or q.ndim != 4
+        or k.ndim != 4
+        or v.ndim != 4
+        or not q.is_cuda
+        or not k.is_cuda
+        or not v.is_cuda
+        or q.dtype not in (torch.float16, torch.bfloat16)
+        or q.dtype != k.dtype
+        or q.dtype != v.dtype
+    ):
+        return None
+    try:
+        from flash_attn.cute import flash_attn_func as flash_attn_4_func
+
+        with _ltx2_record_function(
+            f"ltx2_official_fa4_attention::{profile_prefix}"
+        ):
+            out, _ = flash_attn_4_func(q.to(v.dtype), k.to(v.dtype), v)
+        return out
+    except Exception as exc:
+        logger.warning_once(
+            "Disabling official FA4 attention compatibility path for %s: %s",
+            profile_prefix,
+            exc,
+        )
         return None
 
 
@@ -2196,6 +2302,24 @@ class LTX2Attention(nn.Module):
                 allow_cudnn_sdp=True,
             )
 
+    def _route_stage2_video_self_attention_to_backend(self) -> bool:
+        if os.environ.get(
+            "SGLANG_LTX2_STAGE2_PIECEWISE_BYPASS_OFFICIAL_FA4", "1"
+        ).lower() in ("0", "false", "no"):
+            return False
+        if getattr(self.attn, "backend", None) != AttentionBackendEnum.PIECEWISE_ATTN:
+            return False
+        if not _LTX2_PROFILE_CONTEXT or _LTX2_PROFILE_CONTEXT[-1][0] != "stage2":
+            return False
+        if not str(self.profile_prefix).endswith(".attn1"):
+            return False
+        return (
+            self.context_dim == self.query_dim
+            and self.query_dim == 4096
+            and self.inner_dim == 4096
+            and self.dim_head == 128
+        )
+
     @staticmethod
     def _q_gate_tensor_signature(tensor: torch.Tensor) -> tuple[object, ...]:
         return (
@@ -3043,6 +3167,8 @@ class LTX2Attention(nn.Module):
                     else:
                         q, k = fused_qk
 
+            q_after_norm_for_debug = q
+            k_after_norm_for_debug = k
             if pe is not None and not applied_fused_qknorm_rope:
                 cos, sin = pe
                 k_cos, k_sin = pe if k_pe is None else k_pe
@@ -3068,6 +3194,20 @@ class LTX2Attention(nn.Module):
                         q, k = apply_split_rotary_emb_qk(
                             q, k, (cos, sin), (k_cos, k_sin)
                         )
+            dump_attention_debug_from_env(
+                dump_dir_env="SGLANG_LTX2_ATTENTION_DEBUG_DIR",
+                env_prefix="SGLANG_LTX2_ATTENTION_DEBUG",
+                name=str(profile_prefix),
+                payload={
+                    "q_after_norm": q_after_norm_for_debug,
+                    "k_after_norm": k_after_norm_for_debug,
+                    "q_after_rope": q,
+                    "k_after_rope": k,
+                    "v_flat": v,
+                    "pe": pe,
+                    "k_pe": k_pe,
+                },
+            )
 
         v = v.view(*v.shape[:-1], self.local_heads, self.dim_head)
         if use_attention:
@@ -3128,20 +3268,32 @@ class LTX2Attention(nn.Module):
                 with _ltx2_record_function(f"ltx2_attention_core::{profile_prefix}"):
                     out = self.attn(q, k, v, attn_mask=mask)
             else:
-                with _ltx2_record_function(f"ltx2_attention_core::{profile_prefix}"):
-                    out = self.attn(
-                        q,
-                        k,
-                        v,
-                        attn_mask=mask,
-                        skip_sequence_parallel_override=skip_sequence_parallel_override,
-                    )
+                out = None
+                route_stage2_video_self_to_backend = (
+                    self._route_stage2_video_self_attention_to_backend()
+                )
+                if (
+                    mask is None
+                    and not skip_sequence_parallel_override
+                    and not route_stage2_video_self_to_backend
+                ):
+                    out = _ltx2_try_official_fa4_attention(q, k, v, profile_prefix)
+                if out is None:
+                    with _ltx2_record_function(f"ltx2_attention_core::{profile_prefix}"):
+                        out = self.attn(
+                            q,
+                            k,
+                            v,
+                            attn_mask=mask,
+                            skip_sequence_parallel_override=skip_sequence_parallel_override,
+                        )
 
             if query_gathered_for_sp:
                 sp_rank = get_sp_parallel_rank()
                 query_start = int(sp_rank) * int(local_query_tokens)
                 out = out[:, query_start : query_start + local_query_tokens].contiguous()
 
+            out_before_perturbation_for_debug = out
             if perturbation_mask is not None:
                 with _ltx2_record_function(
                     f"ltx2_attention_mix::{profile_prefix}.perturbation"
@@ -3152,6 +3304,9 @@ class LTX2Attention(nn.Module):
 
         if not use_attention:
             out = v
+            out_before_perturbation_for_debug = out
+
+        out_before_gate_for_debug = out
 
         if self.to_gate_logits is not None:
             with _ltx2_record_function(
@@ -3174,6 +3329,18 @@ class LTX2Attention(nn.Module):
                 out = out.view(b, t, self.local_heads, self.dim_head)
                 out = out * (2.0 * torch.sigmoid(gate_logits).unsqueeze(-1))
                 out = out.view(b, t, self.local_heads * self.dim_head)
+
+        dump_attention_debug_from_env(
+            dump_dir_env="SGLANG_LTX2_ATTENTION_DEBUG_DIR",
+            env_prefix="SGLANG_LTX2_ATTENTION_DEBUG",
+            name=str(profile_prefix),
+            payload={
+                "attn_out_before_perturbation": out_before_perturbation_for_debug,
+                "attn_out_before_gate": out_before_gate_for_debug,
+                "gate_logits": gate_logits if self.to_gate_logits is not None else None,
+                "out_after_gate_flat": out,
+            },
+        )
 
         out_flat = out.flatten(2)
         fused_output_residual = self._try_fp4_to_out_with_residual_gate(
@@ -3254,6 +3421,99 @@ class LTX2FeedForward(nn.Module):
             quant_config=quant_config,
             prefix=_ltx2_child_prefix(prefix, "proj_out"),
         )
+        self._te_nvfp4_video_ffn = (
+            dim == 4096
+            and dim_out == 4096
+            and inner_dim == 16384
+            and str(prefix).endswith(".ff")
+            and not str(prefix).endswith(".audio_ff")
+        )
+        self._te_nvfp4_proj_in = None
+        self._te_nvfp4_proj_out = None
+
+    def _get_te_nvfp4_linear_context(
+        self, cache_attr: str, layer: nn.Module
+    ) -> tuple[nn.Module, object, object] | None:
+        if (
+            not _ltx2_te_nvfp4_video_ffn_enabled()
+            or not self._te_nvfp4_video_ffn
+            or get_tp_world_size() != 1
+        ):
+            return None
+
+        base = _ltx2_linear_base_for_fusion(layer)
+        if base is None:
+            return None
+        if (
+            getattr(base, "quant_method", None).__class__.__name__
+            != "UnquantizedLinearMethod"
+        ):
+            return None
+        weight = getattr(base, "weight", None)
+        bias = getattr(base, "bias", None)
+        if (
+            weight is None
+            or not weight.is_cuda
+            or weight.dtype not in (torch.float16, torch.bfloat16)
+            or getattr(base, "tp_size", 1) != 1
+            or getattr(base, "skip_bias_add", False)
+        ):
+            return None
+        if bias is not None and (bias.device != weight.device or bias.dtype != weight.dtype):
+            return None
+
+        context = _ltx2_get_te_nvfp4_context()
+        if context is None:
+            return None
+        te_linear_cls, fp8_autocast, recipe = context
+
+        input_size = int(getattr(base, "input_size_per_partition", weight.shape[1]))
+        output_size = int(getattr(base, "output_size_per_partition", weight.shape[0]))
+        cached = getattr(self, cache_attr)
+        if (
+            cached is None
+            or getattr(cached, "weight", None) is not weight
+            or getattr(cached, "bias", None) is not bias
+        ):
+            te_layer = te_linear_cls(
+                input_size,
+                output_size,
+                bias=bias is not None,
+                params_dtype=weight.dtype,
+                device=weight.device,
+            )
+            te_layer.weight = weight
+            if bias is not None:
+                te_layer.bias = bias
+            te_layer.train(self.training)
+            setattr(self, cache_attr, te_layer)
+            cached = te_layer
+        return cached, fp8_autocast, recipe
+
+    def _try_te_nvfp4_linear(
+        self, cache_attr: str, layer: nn.Module, x: torch.Tensor
+    ) -> torch.Tensor | None:
+        if not x.is_cuda or x.dtype not in (torch.float16, torch.bfloat16):
+            return None
+        context = self._get_te_nvfp4_linear_context(cache_attr, layer)
+        if context is None:
+            return None
+        te_layer, fp8_autocast, recipe = context
+        input_shape = tuple(x.shape)
+        if not input_shape or input_shape[-1] != int(te_layer.weight.shape[1]):
+            return None
+        x_2d = x.reshape(-1, input_shape[-1])
+        original_m = int(x_2d.shape[0])
+        pad_m_to = int(os.environ.get("SGLANG_LTX2_TE_NVFP4_PAD_M_TO", "16"))
+        if pad_m_to > 1:
+            pad_rows = (-original_m) % pad_m_to
+            if pad_rows:
+                x_2d = F.pad(x_2d, (0, 0, 0, pad_rows))
+        with fp8_autocast(enabled=True, fp8_recipe=recipe):
+            out = te_layer(x_2d)
+        if int(out.shape[0]) != original_m:
+            out = out[:original_m]
+        return out.reshape(*input_shape[:-1], int(out.shape[-1]))
 
     def forward(self, *args, **kwargs) -> torch.Tensor:
         with _ltx2_record_function(f"ltx2_feedforward::{self.prefix}"):
@@ -3319,19 +3579,38 @@ class LTX2FeedForward(nn.Module):
 
 
     def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
-        fused_proj_in = _ltx2_try_fp4_fused_proj_in_bias_gelu(x, self.proj_in)
-        if fused_proj_in is None:
-            fused_proj_in = _ltx2_try_fused_ffn_proj_in_gelu(x, self.proj_in)
-        if fused_proj_in is None:
-            with _ltx2_record_function(f"ltx2_ffn_proj::{self.prefix}.proj_in"):
-                x, _ = self.proj_in(x)
+        te_proj_in = None
+        with _ltx2_record_function(f"ltx2_te_nvfp4_ffn_proj::{self.prefix}.proj_in"):
+            te_proj_in = self._try_te_nvfp4_linear(
+                "_te_nvfp4_proj_in", self.proj_in, x
+            )
+        if te_proj_in is not None:
+            x = te_proj_in
             with _ltx2_record_function(f"ltx2_ffn_act::{self.prefix}.gelu"):
                 fused_gelu = _ltx2_try_gelu_tanh_inplace(x)
                 x = self.act(x) if fused_gelu is None else fused_gelu
         else:
-            x = fused_proj_in
-        with _ltx2_record_function(f"ltx2_ffn_proj::{self.prefix}.proj_out"):
-            x, _ = self.proj_out(x)
+            fused_proj_in = _ltx2_try_fp4_fused_proj_in_bias_gelu(x, self.proj_in)
+            if fused_proj_in is None:
+                fused_proj_in = _ltx2_try_fused_ffn_proj_in_gelu(x, self.proj_in)
+            if fused_proj_in is None:
+                with _ltx2_record_function(f"ltx2_ffn_proj::{self.prefix}.proj_in"):
+                    x, _ = self.proj_in(x)
+                with _ltx2_record_function(f"ltx2_ffn_act::{self.prefix}.gelu"):
+                    fused_gelu = _ltx2_try_gelu_tanh_inplace(x)
+                    x = self.act(x) if fused_gelu is None else fused_gelu
+            else:
+                x = fused_proj_in
+
+        with _ltx2_record_function(f"ltx2_te_nvfp4_ffn_proj::{self.prefix}.proj_out"):
+            te_proj_out = self._try_te_nvfp4_linear(
+                "_te_nvfp4_proj_out", self.proj_out, x
+            )
+        if te_proj_out is not None:
+            x = te_proj_out
+        else:
+            with _ltx2_record_function(f"ltx2_ffn_proj::{self.prefix}.proj_out"):
+                x, _ = self.proj_out(x)
         return x
 
 
@@ -4596,7 +4875,14 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         hidden_device: torch.device,
         hidden_dtype: torch.dtype,
     ) -> torch.Tensor:
-        if self.quantize_video_rope_coords_to_hidden_dtype:
+        ltx_variant = str(getattr(self.config.arch_config, "ltx_variant", "ltx_2"))
+        if (
+            self.quantize_video_rope_coords_to_hidden_dtype
+            and not (
+                ltx_variant == "ltx_2_3"
+                and bool(getattr(self, "_sglang_use_ltx23_hq_timestep_semantics", False))
+            )
+        ):
             return video_coords.to(device=hidden_device, dtype=hidden_dtype)
         return video_coords.to(device=hidden_device)
 
@@ -4612,22 +4898,29 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         audio_timestep: torch.Tensor,
         prompt_timestep: torch.Tensor | None,
         audio_prompt_timestep: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         ltx_variant = str(getattr(self.config.arch_config, "ltx_variant", "ltx_2"))
         if ltx_variant != "ltx_2_3":
-            return timestep, audio_timestep
+            return timestep, audio_timestep, timestep, audio_timestep
 
-        video_timestep = (
-            self._collapse_prompt_timestep(timestep)
-            if prompt_timestep is None
-            else prompt_timestep
-        )
-        audio_timestep_for_ca = (
+        video_scale_shift_timestep = timestep
+        audio_scale_shift_timestep = audio_timestep
+        a2v_gate_timestep = (
             self._collapse_prompt_timestep(audio_timestep)
             if audio_prompt_timestep is None
             else audio_prompt_timestep
         )
-        return video_timestep, audio_timestep_for_ca
+        v2a_gate_timestep = (
+            self._collapse_prompt_timestep(timestep)
+            if prompt_timestep is None
+            else prompt_timestep
+        )
+        return (
+            video_scale_shift_timestep,
+            audio_scale_shift_timestep,
+            a2v_gate_timestep,
+            v2a_gate_timestep,
+        )
 
     def forward(
         self,
@@ -4804,17 +5097,22 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
 
         # 3.2. Prepare global modality cross attention modulation parameters
         hidden_dtype = hidden_states.dtype
-        av_ca_video_timestep, av_ca_audio_timestep = self._get_av_ca_timesteps(
+        (
+            av_ca_video_scale_shift_timestep,
+            av_ca_audio_scale_shift_timestep,
+            av_ca_a2v_gate_timestep,
+            av_ca_v2a_gate_timestep,
+        ) = self._get_av_ca_timesteps(
             timestep,
             audio_timestep,
             prompt_timestep,
             audio_prompt_timestep,
         )
         av_ca_video_timestep_for_adaln = self._scale_timestep_for_adaln(
-            av_ca_video_timestep
+            av_ca_video_scale_shift_timestep
         )
         av_ca_audio_timestep_for_adaln = self._scale_timestep_for_adaln(
-            av_ca_audio_timestep
+            av_ca_audio_scale_shift_timestep
         )
         temb_ca_scale_shift, _ = self.av_ca_video_scale_shift_adaln_single(
             av_ca_video_timestep_for_adaln.flatten(), hidden_dtype=hidden_dtype
@@ -4824,8 +5122,11 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         )
 
         av_ca_gate_factor = self._get_av_ca_gate_timestep_factor()
+        av_ca_a2v_gate_timestep_for_adaln = self._scale_timestep_for_adaln(
+            av_ca_a2v_gate_timestep
+        )
         temb_ca_gate, _ = self.av_ca_a2v_gate_adaln_single(
-            av_ca_video_timestep_for_adaln.flatten() * av_ca_gate_factor,
+            av_ca_a2v_gate_timestep_for_adaln.flatten() * av_ca_gate_factor,
             hidden_dtype=hidden_dtype,
         )
         temb_ca_gate = temb_ca_gate.view(batch_size, -1, temb_ca_gate.shape[-1])
@@ -4838,8 +5139,11 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
             batch_size, -1, temb_ca_audio_scale_shift.shape[-1]
         )
 
+        av_ca_v2a_gate_timestep_for_adaln = self._scale_timestep_for_adaln(
+            av_ca_v2a_gate_timestep
+        )
         temb_ca_audio_gate, _ = self.av_ca_v2a_gate_adaln_single(
-            av_ca_audio_timestep_for_adaln.flatten() * av_ca_gate_factor,
+            av_ca_v2a_gate_timestep_for_adaln.flatten() * av_ca_gate_factor,
             hidden_dtype=audio_hidden_states.dtype,
         )
         temb_ca_audio_gate = temb_ca_audio_gate.view(
@@ -4990,124 +5294,178 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
             prefix_expand_indices = ()
             full_block_inputs = None
 
+        teacache_coordinator = None
+        teacache_decision = None
+        original_hidden_states_for_teacache = None
+        original_audio_hidden_states_for_teacache = None
+        try:
+            from sglang.multimodal_gen.runtime.cache.ltx2_teacache import (
+                get_ltx2_teacache_coordinator,
+            )
+
+            teacache_coordinator = get_ltx2_teacache_coordinator(self)
+        except Exception as exc:
+            logger.warning("Failed to initialize LTX2 TeaCache hook: %s", exc)
+            teacache_coordinator = None
+        if teacache_coordinator is not None:
+            teacache_decision = teacache_coordinator.lookup(
+                hidden_states=hidden_states,
+                audio_hidden_states=audio_hidden_states,
+                temb=temb,
+                temb_audio=temb_audio,
+                skip_video_self_attn_blocks=skip_video_self_attn_blocks,
+                skip_audio_self_attn_blocks=skip_audio_self_attn_blocks,
+                disable_a2v_cross_attn=disable_a2v_cross_attn,
+                disable_v2a_cross_attn=disable_v2a_cross_attn,
+                perturbation_configs=perturbation_configs,
+                pass_id=str(getattr(self, "_sglang_ltx2_pass_id", "default")),
+            )
+            if teacache_decision.should_skip:
+                assert teacache_decision.hidden_states is not None
+                assert teacache_decision.audio_hidden_states is not None
+                hidden_states = teacache_decision.hidden_states
+                audio_hidden_states = teacache_decision.audio_hidden_states
+            else:
+                original_hidden_states_for_teacache = hidden_states
+                original_audio_hidden_states_for_teacache = audio_hidden_states
+
         profile_token = _ltx2_push_profile_context(
             getattr(self, "_sgl_ltx2_profile_phase", "unknown"),
             getattr(self, "_sgl_ltx2_profile_step", "unknown"),
         )
         try:
-            for block in self.transformer_blocks:
-                block_idx = getattr(block, "idx", -1)
-                if (
-                    prefix_share_plan is not None
-                    and not prefix_share_expanded
-                    and block_idx >= prefix_first_skip_block
-                ):
-                    hidden_states = _ltx2_index_batch_dim(
-                        hidden_states, prefix_expand_indices, len(prefix_keep_indices)
-                    )
-                    audio_hidden_states = _ltx2_index_batch_dim(
-                        audio_hidden_states,
-                        prefix_expand_indices,
-                        len(prefix_keep_indices),
-                    )
-                    assert full_block_inputs is not None
-                    (
-                        encoder_hidden_states,
-                        audio_encoder_hidden_states,
-                        temb,
-                        temb_audio,
-                        temb_prompt,
-                        temb_audio_prompt,
-                        temb_ca_scale_shift,
-                        temb_ca_audio_scale_shift,
-                        temb_ca_gate,
-                        temb_ca_audio_gate,
-                        video_rotary_emb,
-                        audio_rotary_emb,
-                        ca_video_rotary_emb,
-                        ca_audio_rotary_emb,
-                        encoder_attention_mask,
-                        audio_encoder_attention_mask,
-                        video_self_attention_mask,
-                        audio_self_attention_mask,
-                        a2v_cross_attention_mask,
-                        v2a_cross_attention_mask,
-                    ) = full_block_inputs
-                    (
-                        video_self_attn_perturbation_states,
-                        audio_self_attn_perturbation_states,
-                        a2v_cross_attn_perturbation_states,
-                        v2a_cross_attn_perturbation_states,
-                    ) = full_perturbation_states
-                    prefix_share_expanded = True
+            if teacache_decision is not None and teacache_decision.should_skip:
+                pass
+            else:
+                for block in self.transformer_blocks:
+                    block_idx = getattr(block, "idx", -1)
+                    if (
+                        prefix_share_plan is not None
+                        and not prefix_share_expanded
+                        and block_idx >= prefix_first_skip_block
+                    ):
+                        hidden_states = _ltx2_index_batch_dim(
+                            hidden_states, prefix_expand_indices, len(prefix_keep_indices)
+                        )
+                        audio_hidden_states = _ltx2_index_batch_dim(
+                            audio_hidden_states,
+                            prefix_expand_indices,
+                            len(prefix_keep_indices),
+                        )
+                        assert full_block_inputs is not None
+                        (
+                            encoder_hidden_states,
+                            audio_encoder_hidden_states,
+                            temb,
+                            temb_audio,
+                            temb_prompt,
+                            temb_audio_prompt,
+                            temb_ca_scale_shift,
+                            temb_ca_audio_scale_shift,
+                            temb_ca_gate,
+                            temb_ca_audio_gate,
+                            video_rotary_emb,
+                            audio_rotary_emb,
+                            ca_video_rotary_emb,
+                            ca_audio_rotary_emb,
+                            encoder_attention_mask,
+                            audio_encoder_attention_mask,
+                            video_self_attention_mask,
+                            audio_self_attention_mask,
+                            a2v_cross_attention_mask,
+                            v2a_cross_attention_mask,
+                        ) = full_block_inputs
+                        (
+                            video_self_attn_perturbation_states,
+                            audio_self_attn_perturbation_states,
+                            a2v_cross_attn_perturbation_states,
+                            v2a_cross_attn_perturbation_states,
+                        ) = full_perturbation_states
+                        prefix_share_expanded = True
 
-                video_self_attn_perturbation_mask = None
-                audio_self_attn_perturbation_mask = None
-                a2v_cross_attn_perturbation_mask = None
-                v2a_cross_attn_perturbation_mask = None
-                skip_video_self_attn = block_idx in skip_video_self_attn_blocks
-                skip_audio_self_attn = block_idx in skip_audio_self_attn_blocks
-                skip_a2v_cross_attn = disable_a2v_cross_attn
-                skip_v2a_cross_attn = disable_v2a_cross_attn
-                if perturbation_configs is not None:
-                    if not skip_video_self_attn:
-                        assert video_self_attn_perturbation_states is not None
-                        state = video_self_attn_perturbation_states[block_idx]
-                        video_self_attn_perturbation_mask, skip_video_self_attn = state
-                    if not skip_audio_self_attn:
-                        assert audio_self_attn_perturbation_states is not None
-                        state = audio_self_attn_perturbation_states[block_idx]
-                        audio_self_attn_perturbation_mask, skip_audio_self_attn = state
-                    if not skip_a2v_cross_attn:
-                        assert a2v_cross_attn_perturbation_states is not None
-                        state = a2v_cross_attn_perturbation_states[block_idx]
-                        a2v_cross_attn_perturbation_mask, skip_a2v_cross_attn = state
-                    if not skip_v2a_cross_attn:
-                        assert v2a_cross_attn_perturbation_states is not None
-                        state = v2a_cross_attn_perturbation_states[block_idx]
-                        v2a_cross_attn_perturbation_mask, skip_v2a_cross_attn = state
-                with _ltx2_record_function(f"ltx2_dit_block::{block_idx}"):
-                    hidden_states, audio_hidden_states = block(
-                        hidden_states,
-                        audio_hidden_states,
-                        encoder_hidden_states,
-                        audio_encoder_hidden_states,
-                        # Keep the first 4 args positional to stay compatible with cache-dit's
-                        # LTX2 adapter, which treats `audio_hidden_states` as `encoder_hidden_states`
-                        # under ForwardPattern.Pattern_0.
-                        temb=temb,
-                        temb_audio=temb_audio,
-                        temb_prompt=temb_prompt,
-                        temb_audio_prompt=temb_audio_prompt,
-                        temb_ca_scale_shift=temb_ca_scale_shift,
-                        temb_ca_audio_scale_shift=temb_ca_audio_scale_shift,
-                        temb_ca_gate=temb_ca_gate,
-                        temb_ca_audio_gate=temb_ca_audio_gate,
-                        video_rotary_emb=video_rotary_emb,
-                        audio_rotary_emb=audio_rotary_emb,
-                        ca_video_rotary_emb=ca_video_rotary_emb,
-                        ca_audio_rotary_emb=ca_audio_rotary_emb,
-                        encoder_attention_mask=encoder_attention_mask,
-                        audio_encoder_attention_mask=audio_encoder_attention_mask,
-                        video_self_attention_mask=video_self_attention_mask,
-                        audio_self_attention_mask=audio_self_attention_mask,
-                        a2v_cross_attention_mask=a2v_cross_attention_mask,
-                        v2a_cross_attention_mask=v2a_cross_attention_mask,
-                        skip_video_self_attn=skip_video_self_attn,
-                        skip_audio_self_attn=skip_audio_self_attn,
-                        skip_a2v_cross_attn=skip_a2v_cross_attn,
-                        skip_v2a_cross_attn=skip_v2a_cross_attn,
-                        video_self_attn_perturbation_mask=video_self_attn_perturbation_mask,
-                        audio_self_attn_perturbation_mask=audio_self_attn_perturbation_mask,
-                        a2v_cross_attn_perturbation_mask=a2v_cross_attn_perturbation_mask,
-                        v2a_cross_attn_perturbation_mask=v2a_cross_attn_perturbation_mask,
-                        audio_replicated_for_sp=audio_replicated_for_sp,
-                        audio_latents_replicated_for_sp=audio_latents_replicated_for_sp,
-                        disable_sequence_parallel_for_replicated_sp=disable_sequence_parallel_for_replicated_sp,
-                        share_block0_self_attn=share_block0_self_attn,
-                    )
+                    video_self_attn_perturbation_mask = None
+                    audio_self_attn_perturbation_mask = None
+                    a2v_cross_attn_perturbation_mask = None
+                    v2a_cross_attn_perturbation_mask = None
+                    skip_video_self_attn = block_idx in skip_video_self_attn_blocks
+                    skip_audio_self_attn = block_idx in skip_audio_self_attn_blocks
+                    skip_a2v_cross_attn = disable_a2v_cross_attn
+                    skip_v2a_cross_attn = disable_v2a_cross_attn
+                    if perturbation_configs is not None:
+                        if not skip_video_self_attn:
+                            assert video_self_attn_perturbation_states is not None
+                            state = video_self_attn_perturbation_states[block_idx]
+                            video_self_attn_perturbation_mask, skip_video_self_attn = state
+                        if not skip_audio_self_attn:
+                            assert audio_self_attn_perturbation_states is not None
+                            state = audio_self_attn_perturbation_states[block_idx]
+                            audio_self_attn_perturbation_mask, skip_audio_self_attn = state
+                        if not skip_a2v_cross_attn:
+                            assert a2v_cross_attn_perturbation_states is not None
+                            state = a2v_cross_attn_perturbation_states[block_idx]
+                            a2v_cross_attn_perturbation_mask, skip_a2v_cross_attn = state
+                        if not skip_v2a_cross_attn:
+                            assert v2a_cross_attn_perturbation_states is not None
+                            state = v2a_cross_attn_perturbation_states[block_idx]
+                            v2a_cross_attn_perturbation_mask, skip_v2a_cross_attn = state
+                    with _ltx2_record_function(f"ltx2_dit_block::{block_idx}"):
+                        hidden_states, audio_hidden_states = block(
+                            hidden_states,
+                            audio_hidden_states,
+                            encoder_hidden_states,
+                            audio_encoder_hidden_states,
+                            # Keep the first 4 args positional to stay compatible with cache-dit's
+                            # LTX2 adapter, which treats `audio_hidden_states` as `encoder_hidden_states`
+                            # under ForwardPattern.Pattern_0.
+                            temb=temb,
+                            temb_audio=temb_audio,
+                            temb_prompt=temb_prompt,
+                            temb_audio_prompt=temb_audio_prompt,
+                            temb_ca_scale_shift=temb_ca_scale_shift,
+                            temb_ca_audio_scale_shift=temb_ca_audio_scale_shift,
+                            temb_ca_gate=temb_ca_gate,
+                            temb_ca_audio_gate=temb_ca_audio_gate,
+                            video_rotary_emb=video_rotary_emb,
+                            audio_rotary_emb=audio_rotary_emb,
+                            ca_video_rotary_emb=ca_video_rotary_emb,
+                            ca_audio_rotary_emb=ca_audio_rotary_emb,
+                            encoder_attention_mask=encoder_attention_mask,
+                            audio_encoder_attention_mask=audio_encoder_attention_mask,
+                            video_self_attention_mask=video_self_attention_mask,
+                            audio_self_attention_mask=audio_self_attention_mask,
+                            a2v_cross_attention_mask=a2v_cross_attention_mask,
+                            v2a_cross_attention_mask=v2a_cross_attention_mask,
+                            skip_video_self_attn=skip_video_self_attn,
+                            skip_audio_self_attn=skip_audio_self_attn,
+                            skip_a2v_cross_attn=skip_a2v_cross_attn,
+                            skip_v2a_cross_attn=skip_v2a_cross_attn,
+                            video_self_attn_perturbation_mask=video_self_attn_perturbation_mask,
+                            audio_self_attn_perturbation_mask=audio_self_attn_perturbation_mask,
+                            a2v_cross_attn_perturbation_mask=a2v_cross_attn_perturbation_mask,
+                            v2a_cross_attn_perturbation_mask=v2a_cross_attn_perturbation_mask,
+                            audio_replicated_for_sp=audio_replicated_for_sp,
+                            audio_latents_replicated_for_sp=audio_latents_replicated_for_sp,
+                            disable_sequence_parallel_for_replicated_sp=disable_sequence_parallel_for_replicated_sp,
+                            share_block0_self_attn=share_block0_self_attn,
+                        )
         finally:
             _ltx2_pop_profile_context(profile_token)
+        if (
+            teacache_coordinator is not None
+            and teacache_decision is not None
+            and not teacache_decision.should_skip
+            and original_hidden_states_for_teacache is not None
+            and original_audio_hidden_states_for_teacache is not None
+        ):
+            teacache_coordinator.store(
+                teacache_decision,
+                original_hidden_states=original_hidden_states_for_teacache,
+                original_audio_hidden_states=original_audio_hidden_states_for_teacache,
+                hidden_states=hidden_states,
+                audio_hidden_states=audio_hidden_states,
+                temb=temb,
+                temb_audio=temb_audio,
+            )
 
         # 6. Output layers
         # Video

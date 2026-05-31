@@ -4,7 +4,10 @@
 # LICENSE file in the root directory of this source tree.
 
 
+import atexit
+import json
 import os
+import threading
 from contextlib import nullcontext
 
 import torch
@@ -25,6 +28,165 @@ from triton.tools.tensor_descriptor import TensorDescriptor
 logger = init_logger(__name__)
 
 _COMPILED_TAYLOR_ERROR_BLOCK_INDICES = None
+_PIECEWISE_STATS_LOCK = threading.Lock()
+_PIECEWISE_STATS_REGISTERED = False
+_PIECEWISE_STATS: dict[str, object] = {
+    "total_calls": 0,
+    "sparse_calls": 0,
+    "fallback_calls": 0,
+    "by_stage": {},
+    "by_prefix": {},
+    "by_reason": {},
+    "by_shape": {},
+}
+
+
+def _piecewise_stats_path() -> str:
+    return os.environ.get("SGLANG_PIECEWISE_ATTN_STATS_PATH", "")
+
+
+def _piecewise_stats_enabled() -> bool:
+    return bool(_piecewise_stats_path())
+
+
+def _piecewise_stats_flush_every() -> int:
+    try:
+        return max(0, int(os.environ.get("SGLANG_PIECEWISE_ATTN_STATS_FLUSH_EVERY", "100")))
+    except ValueError:
+        return 100
+
+
+def _piecewise_dump_stats() -> None:
+    path = _piecewise_stats_path()
+    if not path:
+        return
+    try:
+        abs_path = os.path.abspath(path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        with _PIECEWISE_STATS_LOCK:
+            payload = json.loads(json.dumps(_PIECEWISE_STATS))
+        tmp_path = f"{abs_path}.tmp.{os.getpid()}"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+        os.replace(tmp_path, abs_path)
+    except Exception as exc:
+        logger.warning("Failed to dump piecewise attention stats: %s", exc)
+
+
+def _piecewise_register_stats_dump() -> None:
+    global _PIECEWISE_STATS_REGISTERED
+    if _PIECEWISE_STATS_REGISTERED:
+        return
+    atexit.register(_piecewise_dump_stats)
+    _PIECEWISE_STATS_REGISTERED = True
+
+
+def _piecewise_bump(mapping: dict, key: str, branch: str) -> None:
+    item = mapping.setdefault(key, {"total": 0, "sparse": 0, "fallback": 0})
+    item["total"] = int(item["total"]) + 1
+    item[branch] = int(item[branch]) + 1
+
+
+def _piecewise_record_stats(
+    *,
+    prefix: str,
+    stage: object,
+    branch: str,
+    reason: str,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    density: float,
+    block_size: int | None = None,
+    exact_density: float | None = None,
+) -> None:
+    if not _piecewise_stats_enabled():
+        return
+    _piecewise_register_stats_dump()
+    stage_key = str(stage if stage is not None else "unknown")
+    prefix_key = prefix or "<unknown>"
+    reason_key = reason or branch
+    shape_key = (
+        f"q={tuple(int(x) for x in query.shape)};"
+        f"k={tuple(int(x) for x in key.shape)};"
+        f"v={tuple(int(x) for x in value.shape)};"
+        f"density={density:.6f};block={block_size}"
+    )
+    with _PIECEWISE_STATS_LOCK:
+        _PIECEWISE_STATS["total_calls"] = int(_PIECEWISE_STATS["total_calls"]) + 1
+        if branch == "sparse":
+            _PIECEWISE_STATS["sparse_calls"] = int(_PIECEWISE_STATS["sparse_calls"]) + 1
+        else:
+            _PIECEWISE_STATS["fallback_calls"] = int(_PIECEWISE_STATS["fallback_calls"]) + 1
+        _piecewise_bump(_PIECEWISE_STATS["by_stage"], stage_key, branch)
+        _piecewise_bump(_PIECEWISE_STATS["by_prefix"], prefix_key, branch)
+        _piecewise_bump(_PIECEWISE_STATS["by_reason"], reason_key, branch)
+        _piecewise_bump(_PIECEWISE_STATS["by_shape"], shape_key, branch)
+        if exact_density is not None:
+            shape_item = _PIECEWISE_STATS["by_shape"][shape_key]
+            shape_item["exact_density"] = exact_density
+        total = int(_PIECEWISE_STATS["total_calls"])
+    flush_every = _piecewise_stats_flush_every()
+    if flush_every and total % flush_every == 0:
+        _piecewise_dump_stats()
+
+
+def _parse_int_set(value: object) -> set[int]:
+    if value is None:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        out = set()
+        for item in value:
+            out.update(_parse_int_set(item))
+        return out
+    text = str(value).strip()
+    if not text or text.lower() in ("none", "false", "no"):
+        return set()
+    out: set[int] = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_text, end_text = part.split("-", 1)
+            try:
+                start = int(start_text)
+                end = int(end_text)
+            except ValueError:
+                continue
+            if end < start:
+                start, end = end, start
+            out.update(range(start, end + 1))
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            continue
+    return out
+
+
+def _cfg_or_env_int_set(cfg: dict, cfg_key: str, env_key: str) -> set[int]:
+    value = cfg.get(cfg_key, None)
+    if value is None:
+        value = os.environ.get(env_key)
+    return _parse_int_set(value)
+
+
+def _ltx2_layer_idx_from_prefix(prefix: str) -> int | None:
+    marker = "transformer_blocks."
+    pos = prefix.find(marker)
+    if pos < 0:
+        return None
+    start = pos + len(marker)
+    end = start
+    while end < len(prefix) and prefix[end].isdigit():
+        end += 1
+    if end == start:
+        return None
+    try:
+        return int(prefix[start:end])
+    except ValueError:
+        return None
 
 _PYTORCH_DEFAULT_CUDA_SDP_BACKENDS = [
     SDPBackend.CUDNN_ATTENTION,
@@ -995,8 +1157,16 @@ class PiecewiseAttentionImpl(AttentionImpl):
         self.num_heads = num_heads
         self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
         self.head_size = head_size
+        try:
+            cfg = get_global_server_args().attention_backend_config or {}
+        except ValueError:
+            cfg = {}
+        dense_fallback = cfg.get("piecewise_dense_fallback", None)
+        if dense_fallback is None:
+            dense_fallback = os.environ.get("SGLANG_PIECEWISE_ATTN_DENSE_FALLBACK", "fa")
+        self.dense_fallback = str(dense_fallback).strip().lower()
         self._dense_fa_impl = None
-        if self.dropout == 0.0:
+        if self.dropout == 0.0 and self.dense_fallback != "sdpa":
             try:
                 from sglang.multimodal_gen.runtime.layers.attention.backends.flash_attn import (
                     FlashAttentionBackend,
@@ -1017,10 +1187,6 @@ class PiecewiseAttentionImpl(AttentionImpl):
                     f"{self.prefix or '<unknown>'}: {exc}"
                 )
 
-        try:
-            cfg = get_global_server_args().attention_backend_config or {}
-        except ValueError:
-            cfg = {}
         sparsity = cfg.get("piecewise_sparsity", None)
         if sparsity is None:
             sparsity = os.environ.get("SGLANG_PIECEWISE_ATTN_SPARSITY", "0.9")
@@ -1093,22 +1259,54 @@ class PiecewiseAttentionImpl(AttentionImpl):
         if route_mode is None:
             route_mode = os.environ.get("SGLANG_PIECEWISE_ATTN_ROUTE_MODE", "score")
         self.route_mode = str(route_mode).lower()
+        self.layer_idx = _ltx2_layer_idx_from_prefix(self.prefix or "")
+        self.dense_layers = _cfg_or_env_int_set(
+            cfg, "piecewise_dense_layers", "SGLANG_PIECEWISE_ATTN_DENSE_LAYERS"
+        )
+        self.stage1_dense_layers = _cfg_or_env_int_set(
+            cfg,
+            "piecewise_stage1_dense_layers",
+            "SGLANG_PIECEWISE_ATTN_STAGE1_DENSE_LAYERS",
+        )
+        self.stage2_dense_layers = _cfg_or_env_int_set(
+            cfg,
+            "piecewise_stage2_dense_layers",
+            "SGLANG_PIECEWISE_ATTN_STAGE2_DENSE_LAYERS",
+        )
 
         logger.info_once(
             "Piecewise attention configured for "
             f"{self.prefix or '<unknown>'}: density={self.density:.4f} "
             f"block_size={self.block_size} "
             f"only_video_self={self.only_video_self_attention} "
+            f"dense_fallback={self.dense_fallback} "
             f"approx_remainder={self.approx_remainder} "
             f"route_mode={self.route_mode} "
-            f"stage1_schedule={self.stage1_schedule}"
+            f"stage1_schedule={self.stage1_schedule} "
+            f"layer_idx={self.layer_idx} "
+            f"dense_layers={sorted(self.dense_layers)} "
+            f"stage1_dense_layers={sorted(self.stage1_dense_layers)} "
+            f"stage2_dense_layers={sorted(self.stage2_dense_layers)}"
         )
 
+    def _layer_forces_dense(self, stage: str | None) -> bool:
+        if self.layer_idx is None:
+            return False
+        if self.layer_idx in self.dense_layers:
+            return True
+        if stage == "stage1" and self.layer_idx in self.stage1_dense_layers:
+            return True
+        if stage == "stage2" and self.layer_idx in self.stage2_dense_layers:
+            return True
+        return False
+
     def _density_for_step(self, attn_metadata: AttentionMetadata | None) -> float:
+        stage = getattr(attn_metadata, "ltx2_stage", None) if attn_metadata is not None else None
+        if self._layer_forces_dense(stage):
+            return 1.0
         if not self.stage1_schedule or attn_metadata is None:
             return self.density
 
-        stage = getattr(attn_metadata, "ltx2_stage", None)
         if stage != "stage1":
             return self.density
 
@@ -1126,6 +1324,31 @@ class PiecewiseAttentionImpl(AttentionImpl):
         )
         return min(1.0, max(0.0, 1.0 - sparsity))
 
+    def _piecewise_fallback_reason(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        density: float,
+    ) -> str:
+        if self.dropout != 0.0:
+            return "dropout"
+        if self.causal:
+            return "causal"
+        if query.device.type != "cuda":
+            return "non_cuda"
+        if query.shape[1] != key.shape[1]:
+            return "qk_sequence_mismatch"
+        if query.shape[2] != key.shape[2] or key.shape[2] != value.shape[2]:
+            return "head_mismatch"
+        if self.only_video_self_attention and (
+            ".attn1.attn" not in self.prefix or ".audio_attn1." in self.prefix
+        ):
+            return "not_video_self_attention"
+        if density >= 1.0:
+            return "density_ge_1"
+        return ""
+
     def _should_use_piecewise(
         self,
         query: torch.Tensor,
@@ -1133,21 +1356,7 @@ class PiecewiseAttentionImpl(AttentionImpl):
         value: torch.Tensor,
         density: float,
     ) -> bool:
-        if self.dropout != 0.0 or self.causal:
-            return False
-        if query.device.type != "cuda":
-            return False
-        if query.shape[1] != key.shape[1]:
-            return False
-        if query.shape[2] != key.shape[2] or key.shape[2] != value.shape[2]:
-            return False
-        if self.only_video_self_attention and (
-            ".attn1.attn" not in self.prefix or ".audio_attn1." in self.prefix
-        ):
-            return False
-        if density >= 1.0:
-            return False
-        return True
+        return not self._piecewise_fallback_reason(query, key, value, density)
 
     def _dense_sdpa(
         self,
@@ -1189,7 +1398,18 @@ class PiecewiseAttentionImpl(AttentionImpl):
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
         density = self._density_for_step(attn_metadata)
-        if not self._should_use_piecewise(query, key, value, density):
+        fallback_reason = self._piecewise_fallback_reason(query, key, value, density)
+        if fallback_reason:
+            _piecewise_record_stats(
+                prefix=self.prefix,
+                stage=getattr(attn_metadata, "ltx2_stage", None) if attn_metadata is not None else None,
+                branch="fallback",
+                reason=fallback_reason,
+                query=query,
+                key=key,
+                value=value,
+                density=density,
+            )
             return self._dense_sdpa(query, key, value, attn_metadata)
 
         logger.debug(
@@ -1201,6 +1421,7 @@ class PiecewiseAttentionImpl(AttentionImpl):
         k = key.transpose(1, 2).contiguous()
         v = value.transpose(1, 2).contiguous()
         block_size = min(self.block_size, q.shape[-2], k.shape[-2])
+        exact_density = None
         with torch.no_grad():
             triton.set_allocator(_make_tma_allocator())
             if self.route_mode == "local" and not self.approx_remainder:
@@ -1263,4 +1484,16 @@ class PiecewiseAttentionImpl(AttentionImpl):
                 scale=self.softmax_scale,
                 approx_remainder=self.approx_remainder,
             )
+        _piecewise_record_stats(
+            prefix=self.prefix,
+            stage=getattr(attn_metadata, "ltx2_stage", None) if attn_metadata is not None else None,
+            branch="sparse",
+            reason="",
+            query=query,
+            key=key,
+            value=value,
+            density=density,
+            block_size=block_size,
+            exact_density=exact_density,
+        )
         return output.transpose(1, 2).contiguous()
