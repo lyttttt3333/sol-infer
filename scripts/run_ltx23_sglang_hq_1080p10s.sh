@@ -147,10 +147,12 @@ enable_kwl_env() {
   export SGLANG_LTX2_FUSED_ADALN="${SGLANG_HQ_KWL_FUSED_ADALN:-0}"
   export SGLANG_LTX2_FUSED_QKNORM_ROPE="${SGLANG_HQ_KWL_FUSED_QKNORM_ROPE:-0}"
   export SGLANG_LTX2_FUSED_DUAL_MODULATE="${SGLANG_HQ_KWL_FUSED_DUAL_MODULATE:-0}"
+  export SGLANG_LTX2_FUSED_CA_DUAL_MODULATE="${SGLANG_HQ_KWL_FUSED_CA_DUAL_MODULATE:-0}"
   export SGLANG_LTX2_FUSED_ADA_VALUES_ALL="${SGLANG_HQ_KWL_FUSED_ADA_VALUES_ALL:-1}"
   export SGLANG_LTX2_FUSED_RESIDUAL_GATE="${SGLANG_HQ_KWL_FUSED_RESIDUAL_GATE:-0}"
   export SGLANG_LTX2_FUSED_FFN_PROJ_IN_GELU="${SGLANG_HQ_KWL_FUSED_FFN_PROJ_IN_GELU:-0}"
   export SGLANG_LTX2_COMPILE_GATE_TO_OUT="${SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT:-0}"
+  export SGLANG_LTX2_COMPILE_GATE_TO_OUT_RESIDUAL="${SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT_RESIDUAL:-0}"
   export SGLANG_LTX2_FUSED_AUDIO_QKVG="${SGLANG_HQ_KWL_FUSED_AUDIO_QKVG:-0}"
   export SGLANG_ENABLE_FUSED_QKNORM_ROPE="${SGLANG_HQ_KWL_ENABLE_FUSED_QKNORM_ROPE:-0}"
   export SGLANG_LTX2_COMPILE_TILED_VAE_DECODER="${SGLANG_HQ_KWL_COMPILE_TILED_VAE:-0}"
@@ -166,10 +168,12 @@ enable_kwl_experimental_env() {
   export SGLANG_LTX2_FUSED_ADALN="${SGLANG_HQ_KWL_FUSED_ADALN:-1}"
   export SGLANG_LTX2_FUSED_QKNORM_ROPE="${SGLANG_HQ_KWL_FUSED_QKNORM_ROPE:-1}"
   export SGLANG_LTX2_FUSED_DUAL_MODULATE="${SGLANG_HQ_KWL_FUSED_DUAL_MODULATE:-1}"
+  export SGLANG_LTX2_FUSED_CA_DUAL_MODULATE="${SGLANG_HQ_KWL_FUSED_CA_DUAL_MODULATE:-1}"
   export SGLANG_LTX2_FUSED_ADA_VALUES_ALL="${SGLANG_HQ_KWL_FUSED_ADA_VALUES_ALL:-1}"
   export SGLANG_LTX2_FUSED_RESIDUAL_GATE="${SGLANG_HQ_KWL_FUSED_RESIDUAL_GATE:-1}"
   export SGLANG_LTX2_FUSED_FFN_PROJ_IN_GELU="${SGLANG_HQ_KWL_FUSED_FFN_PROJ_IN_GELU:-1}"
   export SGLANG_LTX2_COMPILE_GATE_TO_OUT="${SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT:-1}"
+  export SGLANG_LTX2_COMPILE_GATE_TO_OUT_RESIDUAL="${SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT_RESIDUAL:-1}"
   export SGLANG_LTX2_FUSED_AUDIO_QKVG="${SGLANG_HQ_KWL_FUSED_AUDIO_QKVG:-1}"
   export SGLANG_ENABLE_FUSED_QKNORM_ROPE="${SGLANG_HQ_KWL_ENABLE_FUSED_QKNORM_ROPE:-1}"
   export SGLANG_LTX2_COMPILE_TILED_VAE_DECODER="${SGLANG_HQ_KWL_COMPILE_TILED_VAE:-1}"
@@ -375,10 +379,12 @@ summary = {
         "fused_adaln": __import__("os").environ.get("SGLANG_LTX2_FUSED_ADALN", "0"),
         "fused_qknorm_rope": __import__("os").environ.get("SGLANG_LTX2_FUSED_QKNORM_ROPE", "0"),
         "fused_dual_modulate": __import__("os").environ.get("SGLANG_LTX2_FUSED_DUAL_MODULATE", "0"),
+        "fused_ca_dual_modulate": __import__("os").environ.get("SGLANG_LTX2_FUSED_CA_DUAL_MODULATE", "0"),
         "fused_ada_values_all": __import__("os").environ.get("SGLANG_LTX2_FUSED_ADA_VALUES_ALL", "0"),
         "fused_residual_gate": __import__("os").environ.get("SGLANG_LTX2_FUSED_RESIDUAL_GATE", "0"),
         "fused_ffn_proj_in_gelu": __import__("os").environ.get("SGLANG_LTX2_FUSED_FFN_PROJ_IN_GELU", "0"),
         "compile_gate_to_out": __import__("os").environ.get("SGLANG_LTX2_COMPILE_GATE_TO_OUT", "0"),
+        "compile_gate_to_out_residual": __import__("os").environ.get("SGLANG_LTX2_COMPILE_GATE_TO_OUT_RESIDUAL", "0"),
         "fused_audio_qkvg": __import__("os").environ.get("SGLANG_LTX2_FUSED_AUDIO_QKVG", "0"),
         "enable_fused_qknorm_rope": __import__("os").environ.get("SGLANG_ENABLE_FUSED_QKNORM_ROPE", "0"),
         "compile_tiled_vae_decoder": __import__("os").environ.get("SGLANG_LTX2_COMPILE_TILED_VAE_DECODER", "0"),
@@ -390,6 +396,8 @@ summary = {
         "disable_rht": __import__("os").environ.get("SGLANG_LTX2_TE_NVFP4_DISABLE_RHT", ""),
         "disable_stochastic_rounding": __import__("os").environ.get("SGLANG_LTX2_TE_NVFP4_DISABLE_STOCHASTIC_ROUNDING", ""),
         "disable_2d_quantization": __import__("os").environ.get("SGLANG_LTX2_TE_NVFP4_DISABLE_2D_QUANTIZATION", ""),
+        "fused_proj_in_gelu": __import__("os").environ.get("SGLANG_LTX2_TE_NVFP4_FUSED_PROJ_IN_GELU", "0"),
+        "fused_proj_out_bias_gate": __import__("os").environ.get("SGLANG_LTX2_TE_NVFP4_FUSED_PROJ_OUT_BIAS_GATE", "0"),
     },
 }
 out_dir.joinpath("hq_semantics.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
