@@ -327,6 +327,55 @@ A previous exploratory run with all four switches requested is preserved under
 `outputs/ltx23-hq-45aligned-kernelopts-1080p10s`, but it is not the recommended launch because the
 TE `proj_in+GELU` path fell back.
 
+### Current Validation and Profile
+
+Commit `d23c3d2cb` was revalidated with the recommended CA-dual launch script:
+
+```text
+artifact: outputs/ltx23-hq-current-best-ca-dual-validate-1080p10s/ca_dual_only
+total: 44.866 s
+stage1: 24.582 s
+stage2: 14.284 s
+decode: 5.826 s
+```
+
+The profile run is intentionally slower because it records CUDA events around many nested scopes:
+
+```text
+artifact: outputs/ltx23-hq-current-best-ca-dual-profile-1080p10s/ca_dual_profile
+total: 53.735 s
+event profile: outputs/ltx23-hq-current-best-ca-dual-profile-1080p10s/ca_dual_profile/ltx2_event_profile.json
+```
+
+Use the shared summarizer instead of hand-aggregating nested profile events:
+
+```bash
+python scripts/summarize_ltx2_event_profile.py \
+  outputs/ltx23-hq-current-best-ca-dual-profile-1080p10s/ca_dual_profile/ltx2_event_profile.json \
+  --top 18
+```
+
+The current steady hotspot ranking, after subtracting one max sample per event to reduce warmup
+pollution, is:
+
+```text
+stage1 attention_linear_proj_gate_out: 13.800 s
+stage1 dense_fa_attention_core: 12.516 s
+stage2 attention_backend_core: 10.851 s
+stage1 ffn_te_nvfp4_linear: 8.032 s
+stage1 adaln_modulation_fused: 5.548 s
+stage2 attention_linear_proj_gate_out: 5.405 s
+stage1 attention_gate_to_out_compile: 3.871 s
+stage2 ffn_te_nvfp4_linear: 2.829 s
+stage2 adaln_modulation_fused: 1.729 s
+stage2 attention_gate_to_out_compile: 1.668 s
+```
+
+This points to the next no-algorithm-change opportunities being projection/epilogue work around
+attention and FFN, plus backend-kernel work for the existing `sparsity=0.9, block_size=64,
+route_mode=score` stage-2 PISA attention. Text encoding and connector stages are already small in
+the validated run (`84 ms` and `34 ms`) and are not the next useful optimization target.
+
 ## Useful Comparison Artifacts
 
 ```bash
