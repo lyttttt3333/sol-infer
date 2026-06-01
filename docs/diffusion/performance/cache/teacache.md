@@ -1,7 +1,7 @@
 # TeaCache
 
-> **Note**: This is one of two caching strategies available in SGLang.
-> For an overview of all caching options, see [caching](../index.md).
+> **Note**: This is one cache strategy available in SGLang.
+> For an overview of all caching options, see [caching](index.md).
 
 TeaCache (Temporal similarity-based caching) accelerates diffusion inference by detecting when consecutive denoising steps are similar enough to skip computation entirely.
 
@@ -101,6 +101,10 @@ The output norm, projection, and unpatchify/decode path still runs every step.
 By default only stage 1 is enabled because stage 2 has only a few refinement
 steps and is more visually sensitive.
 
+After each denoising stage, the runtime resets TeaCache state. This releases the
+cached residual tensors before stage 2 starts and prevents stage-1 residuals
+from remaining live on GPU memory during the refinement stage.
+
 ### Environment Variables
 
 | Variable | Meaning | Default in benchmark variants |
@@ -110,6 +114,7 @@ steps and is more visually sensitive.
 | `SGLANG_LTX2_TEACACHE_START` | First denoising step eligible for replay | `6` for c04, `5` for c06/c08 |
 | `SGLANG_LTX2_TEACACHE_STAGE2_DISABLE` | Disable TeaCache on stage 2 | `1` |
 | `SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS` | Cap consecutive cache hits before recompute | `1` |
+| `SGLANG_LTX2_TEACACHE_PERIODIC_RECOMPUTE_STEPS` | Optional fixed recompute cadence; `0` disables it | `0` |
 
 ### LTX-2.3 Benchmark Variants
 
@@ -119,6 +124,7 @@ HQ, 15-step stage-1 `LTX2TwoStageHQPipeline`:
 bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl
 bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c04_s6
 bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c06_s5
+bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c08_s5
 ```
 
 Non-HQ, 30-step stage-1 `LTX2TwoStagePipeline`:
@@ -127,6 +133,7 @@ Non-HQ, 30-step stage-1 `LTX2TwoStagePipeline`:
 bash scripts/run_ltx23_sglang_nonhq_cache_10s.sh kwl
 bash scripts/run_ltx23_sglang_nonhq_cache_10s.sh kwl_cache_teacache_c04_s6
 bash scripts/run_ltx23_sglang_nonhq_cache_10s.sh kwl_cache_teacache_c06_s5
+bash scripts/run_ltx23_sglang_nonhq_cache_10s.sh kwl_cache_teacache_c08_s5
 ```
 
 The combined matrix runner produces videos plus JSON/Markdown/HTML reports:
@@ -137,6 +144,77 @@ bash scripts/run_ltx23_teacache_hq_nonhq_matrix_10s.sh
 
 The report includes total, denoising, stage-1, and stage-2 timing plus TeaCache
 hit/compute counts and skipped step indices parsed from runtime logs.
+
+### Reading the Speedup
+
+For LTX-2.3, TeaCache does not make every part of the request faster. The
+reported hit count only applies to denoising steps where the transformer block
+stack was skipped. Text encoding, VAE decode, audio/vocoder work, LoRA switching,
+stage-2 refinement when disabled, and output writing still run. For this reason,
+the report shows both total-pipeline speedup and stage-specific speedups.
+
+Example interpretation:
+
+- `skip_steps=[6, 7, 8, 9, 10, 11, 12, 13]` means the transformer block stack was
+  skipped on those stage-1 denoising steps.
+- `computes=27, hits=24` counts per stage/pass/cache key, not just human-visible
+  denoising step numbers.
+- A strong stage-1 speedup can still become a modest total speedup if stage 2 or
+  decode dominates the wall clock.
+
+### LTX-2.3 10s Benchmark, 2026-06-01
+
+Run: `ltx23-teacache-hq-nonhq-matrix-10s-full-4545670`.
+
+Prompts:
+
+- Prompt 0: elderly ceramic artist painting blue patterns on a porcelain vase.
+- Prompt 1: red fox running through tall grass at sunrise.
+
+Runtime placement:
+
+- `performance_mode=speed`
+- `SGLANG_LTX2_DIT_CPU_OFFLOAD=1`
+- `SGLANG_LTX2_VAE_CPU_OFFLOAD=1`
+- `SGLANG_LTX2_LAYERWISE_OFFLOAD_COMPONENTS=text_encoder`
+- `SGLANG_LTX2_TWO_STAGE_DEVICE_MODE=snapshot`
+- `SGLANG_LTX2_PIN_CPU_MEMORY=false`
+
+Key result: TeaCache consistently accelerates stage-1 denoising, but the
+end-to-end pipeline speedup is small or negative in this offloaded two-stage
+setup because stage 2 is intentionally not cached and LoRA/offload/snapshot
+stages dominate or fluctuate. The visual decision should be made from the
+generated compare videos, not from speed alone.
+
+| Pipeline | Prompt | Variant | Total s | Total x | Stage1 s | Stage1 x | Stage2 s | Stage-1 skipped steps | Hits/computes |
+|---|---:|---|---:|---:|---:|---:|---:|---|---|
+| HQ 15-step | 0 | KWL baseline | 343.07 | 1.000 | 150.67 | 1.000 | 68.27 | - | - |
+| HQ 15-step | 0 | TeaCache 0.04/start6 | 342.34 | 1.002 | 114.26 | 1.319 | 87.30 | 6-13 | 24/27 |
+| HQ 15-step | 0 | TeaCache 0.06/start5 | 345.97 | 0.992 | 105.85 | 1.423 | 88.39 | 5-13 | 27/30 |
+| HQ 15-step | 0 | TeaCache 0.08/start5 | 346.26 | 0.991 | 106.19 | 1.419 | 91.22 | 5-13 | 27/30 |
+| Non-HQ 30-step | 0 | KWL baseline | 242.78 | 1.000 | 166.49 | 1.000 | 31.91 | - | - |
+| Non-HQ 30-step | 0 | TeaCache 0.04/start6 | 238.66 | 1.017 | 128.81 | 1.293 | 38.10 | 6,8,11,13,16,18,21,24 | 8/16 |
+| Non-HQ 30-step | 0 | TeaCache 0.06/start5 | 286.78 | 0.847 | 114.97 | 1.448 | 33.39 | 5,7,9,12,14,16,19,21,23,26 | 10/15 |
+| Non-HQ 30-step | 0 | TeaCache 0.08/start5 | 286.78 | 0.847 | 110.68 | 1.504 | 33.31 | 5,7,9,11,14,16,18,20,23,25,28 | 11/14 |
+| HQ 15-step | 1 | KWL baseline | 351.06 | 1.000 | 148.46 | 1.000 | 68.17 | - | - |
+| HQ 15-step | 1 | TeaCache 0.04/start6 | 357.29 | 0.983 | 111.85 | 1.327 | 85.70 | 6-13 | 24/27 |
+| HQ 15-step | 1 | TeaCache 0.06/start5 | 404.04 | 0.869 | 105.89 | 1.402 | 86.08 | 5-13 | 27/30 |
+| HQ 15-step | 1 | TeaCache 0.08/start5 | 404.12 | 0.869 | 107.07 | 1.387 | 88.57 | 5-13 | 27/30 |
+| Non-HQ 30-step | 1 | KWL baseline | 267.71 | 1.000 | 165.03 | 1.000 | 32.38 | - | - |
+| Non-HQ 30-step | 1 | TeaCache 0.04/start6 | 267.71 | 1.000 | 127.15 | 1.298 | 33.76 | 6,8,11,13,16,18,21,24 | 8/16 |
+| Non-HQ 30-step | 1 | TeaCache 0.06/start5 | 276.47 | 0.968 | 117.18 | 1.408 | 33.21 | 5,7,9,12,14,16,19,21,23,26 | 10/15 |
+| Non-HQ 30-step | 1 | TeaCache 0.08/start5 | 276.47 | 0.968 | 112.59 | 1.466 | 33.10 | 5,7,9,11,14,16,18,20,23,25,28 | 11/14 |
+
+Average over the two prompts:
+
+| Pipeline | Variant | Avg total x | Avg stage1 x | Interpretation |
+|---|---|---:|---:|---|
+| HQ 15-step | TeaCache 0.04/start6 | 0.992 | 1.323 | Mildest TeaCache setting; stable stage-1 gain, no end-to-end gain here. |
+| HQ 15-step | TeaCache 0.06/start5 | 0.930 | 1.413 | More stage-1 skip, but end-to-end slower because uncached stages dominate. |
+| HQ 15-step | TeaCache 0.08/start5 | 0.930 | 1.403 | Similar to 0.06/start5; no extra HQ benefit in this run. |
+| Non-HQ 30-step | TeaCache 0.04/start6 | 1.009 | 1.295 | Only setting with neutral/slightly positive end-to-end result. |
+| Non-HQ 30-step | TeaCache 0.06/start5 | 0.907 | 1.428 | Better stage-1 gain, worse total due offload/LoRA overhead. |
+| Non-HQ 30-step | TeaCache 0.08/start5 | 0.907 | 1.485 | Best stage-1 gain, but not best total in this setup. |
 
 
 ## References

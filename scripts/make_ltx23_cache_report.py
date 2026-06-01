@@ -147,14 +147,109 @@ def _teacache_short(case: dict[str, Any]) -> str:
     return "; ".join(parts) if parts else "-"
 
 
+def _offload_short(case: dict[str, Any]) -> str:
+    sem = case.get("semantics") or {}
+    parts = []
+    if sem.get("performance_mode"):
+        parts.append(f"perf={sem.get('performance_mode')}")
+    if sem.get("two_stage_device_mode"):
+        parts.append(f"2stage={sem.get('two_stage_device_mode')}")
+    for key, label in (
+        ("dit_cpu_offload", "dit_cpu"),
+        ("text_encoder_cpu_offload", "te_cpu"),
+        ("vae_cpu_offload", "vae_cpu"),
+        ("dit_layerwise_offload", "dit_lw"),
+    ):
+        if sem.get(key):
+            parts.append(label)
+    if sem.get("pin_cpu_memory") is False:
+        parts.append("pin_cpu=false")
+    return ", ".join(parts) if parts else "-"
+
+
+def _cache_mechanism(case: dict[str, Any]) -> str:
+    variant = str(case.get("variant", ""))
+    stats = case.get("teacache_stats") or {}
+    if "teacache" in variant:
+        skipped: list[int] = []
+        computes = 0
+        hits = 0
+        for item in stats.values():
+            if not isinstance(item, dict):
+                continue
+            skipped.extend(item.get("skipped_steps", []) or [])
+            computes += int(item.get("computes", 0) or 0)
+            hits += int(item.get("hits", 0) or 0)
+        skipped = sorted(set(int(step) for step in skipped))
+        if skipped:
+            return (
+                "TeaCache residual replay; skipped transformer block stack on "
+                f"{len(skipped)} step(s): {skipped}; computes={computes}, hits={hits}"
+            )
+        return "TeaCache residual replay; no parsed skips yet"
+    if "stage1_cache_core" in variant:
+        return "Stage-1 cache-core residual reuse inside LTX2 block stack"
+    if "pab" in variant:
+        return "PAB attention broadcast/reuse windows"
+    if "dbcache" in variant:
+        return "DBCache block-level reuse from Cache-DiT residual difference policy"
+    return "No cache skip; KWL/dense baseline"
+
+
+def _method_summary_table() -> str:
+    rows = [
+        (
+            "KWL baseline",
+            "No cache skip",
+            "Reference path for speedup; fused/KWL kernels may still be enabled.",
+            "kwl",
+        ),
+        (
+            "TeaCache",
+            "Timestep residual replay",
+            "When accumulated L1 change is below threshold, skip the transformer block stack for that denoise step and replay cached video/audio residuals.",
+            "kwl_teacache_c04_s6, c06_s5, c08_s5",
+        ),
+        (
+            "Stage1 cache-core",
+            "Stage-1 residual reuse",
+            "Experimental LTX2 stage-1 cache path; keeps output projection/decode live.",
+            "kwl_stage1_cache_core",
+        ),
+        (
+            "PAB",
+            "Attention broadcast windows",
+            "Reuses attention results over configured spatial/temporal/cross windows. Not included in this TeaCache-focused matrix.",
+            "cache_pab_late12_w3",
+        ),
+        (
+            "DBCache",
+            "Block-level Cache-DiT",
+            "Skips selected DiT blocks based on residual-difference policy. Not included in this TeaCache-focused matrix.",
+            "cache_dbcache_aggressive",
+        ),
+    ]
+    lines = [
+        "## Cache Method Summary",
+        "",
+        "| Method | Skip scope | How acceleration happens | Variant(s) |",
+        "|---|---|---|---|",
+    ]
+    for method, scope, mechanism, variants in rows:
+        lines.append(f"| {method} | {scope} | {mechanism} | `{variants}` |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _markdown_table(summary: dict[str, Any]) -> str:
     lines = [
         "# LTX-2.3 Cache Benchmark",
         "",
         f"Root: `{summary['root']}`",
         "",
-        "| Pipeline | Prompt | Variant | Total s | Denoise s | Stage1 s | Stage2 s | Total x | Denoise x | Stage1 x | TeaCache stats | Video |",
-        "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
+        _method_summary_table(),
+        "| Pipeline | Prompt | Variant | Total s | Denoise s | Stage1 s | Stage2 s | Total x | Denoise x | Stage1 x | Acceleration mechanism | TeaCache stats | Runtime placement | Video |",
+        "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|",
     ]
     for prompt_key, prompt_data in summary["per_prompt"].items():
         prompt_index = prompt_data["prompt_index"]
@@ -174,7 +269,9 @@ def _markdown_table(summary: dict[str, Any]) -> str:
                             _fmt(case.get("speedup_total"), 3),
                             _fmt(case.get("speedup_denoise"), 3),
                             _fmt(case.get("speedup_stage1"), 3),
+                            _cache_mechanism(case).replace("|", "\\|"),
                             _teacache_short(case).replace("|", "\\|"),
+                            _offload_short(case).replace("|", "\\|"),
                             f"`{case['video']}`",
                         ]
                     )
@@ -192,6 +289,15 @@ def _rel(root: Path, path: str) -> str:
 
 
 def _html_report(summary: dict[str, Any], root: Path) -> str:
+    method_rows = []
+    for line in _method_summary_table().splitlines()[4:9]:
+        cells = [cell.strip(" `") for cell in line.strip("|").split("|")]
+        if len(cells) == 4:
+            method_rows.append(
+                "<tr>"
+                + "".join(f"<td>{html.escape(cell)}</td>" for cell in cells)
+                + "</tr>"
+            )
     rows = []
     for prompt_data in summary["per_prompt"].values():
         prompt_index = prompt_data["prompt_index"]
@@ -209,7 +315,9 @@ def _html_report(summary: dict[str, Any], root: Path) -> str:
                     f"<td>{_fmt(case.get('speedup_total'), 3)}</td>"
                     f"<td>{_fmt(case.get('speedup_denoise'), 3)}</td>"
                     f"<td>{_fmt(case.get('speedup_stage1'), 3)}</td>"
+                    f"<td>{html.escape(_cache_mechanism(case))}</td>"
                     f"<td>{html.escape(_teacache_short(case))}</td>"
+                    f"<td>{html.escape(_offload_short(case))}</td>"
                     f"<td><a href='{html.escape(_rel(root, case['video']))}'>video</a></td>"
                     "</tr>"
                 )
@@ -244,9 +352,17 @@ def _html_report(summary: dict[str, Any], root: Path) -> str:
 <body>
   <h1>LTX-2.3 Cache Benchmark</h1>
   <p>Root: <code>{html.escape(summary['root'])}</code></p>
+  <h2>Cache Method Summary</h2>
   <table>
     <thead>
-      <tr><th>Pipeline</th><th>Prompt</th><th>Variant</th><th>Total s</th><th>Denoise s</th><th>Stage1 s</th><th>Stage2 s</th><th>Total x</th><th>Denoise x</th><th>Stage1 x</th><th>TeaCache stats</th><th>Video</th></tr>
+      <tr><th>Method</th><th>Skip scope</th><th>How acceleration happens</th><th>Variant(s)</th></tr>
+    </thead>
+    <tbody>{''.join(method_rows)}</tbody>
+  </table>
+  <h2>Benchmark Results</h2>
+  <table>
+    <thead>
+      <tr><th>Pipeline</th><th>Prompt</th><th>Variant</th><th>Total s</th><th>Denoise s</th><th>Stage1 s</th><th>Stage2 s</th><th>Total x</th><th>Denoise x</th><th>Stage1 x</th><th>Acceleration mechanism</th><th>TeaCache stats</th><th>Runtime placement</th><th>Video</th></tr>
     </thead>
     <tbody>{''.join(rows)}</tbody>
   </table>

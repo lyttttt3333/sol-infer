@@ -708,8 +708,14 @@ def _ltx2_fused_qknorm_enabled() -> bool:
     return os.environ.get("SGLANG_LTX2_FUSED_QKNORM", "0") == "1"
 
 
+_LTX2_OFFICIAL_FA4_ATTENTION_DISABLED_REASON: str | None = None
+
+
 def _ltx2_official_fa4_attention_enabled() -> bool:
-    return os.environ.get("SGLANG_LTX2_OFFICIAL_FA4_ATTENTION", "0") == "1"
+    return (
+        os.environ.get("SGLANG_LTX2_OFFICIAL_FA4_ATTENTION", "0") == "1"
+        and _LTX2_OFFICIAL_FA4_ATTENTION_DISABLED_REASON is None
+    )
 
 
 def _ltx2_fused_qknorm_rope_enabled() -> bool:
@@ -1304,10 +1310,10 @@ def _ltx2_try_official_fa4_attention(
             out, _ = flash_attn_4_func(q.to(v.dtype), k.to(v.dtype), v)
         return out
     except Exception as exc:
+        global _LTX2_OFFICIAL_FA4_ATTENTION_DISABLED_REASON
+        _LTX2_OFFICIAL_FA4_ATTENTION_DISABLED_REASON = str(exc)
         logger.warning_once(
-            "Disabling official FA4 attention compatibility path for %s: %s",
-            profile_prefix,
-            exc,
+            f"Disabling official FA4 attention compatibility path for {profile_prefix}: {exc}"
         )
         return None
 

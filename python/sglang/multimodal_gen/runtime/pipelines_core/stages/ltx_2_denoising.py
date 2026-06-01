@@ -4020,6 +4020,9 @@ class LTX2DenoisingStage(DenoisingStage):
                     ctx.stage,
                     teacache.stats_summary(),
                 )
+                teacache.reset()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             except Exception as exc:
                 logger.warning("Failed to log LTX2 TeaCache stats: %s", exc)
         stage1_cache_core = ctx.stage1_cache_core

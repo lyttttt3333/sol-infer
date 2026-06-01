@@ -715,6 +715,7 @@ class LTX2VideoUpBlock3d(nn.Module):
         resnet_eps: float = 1e-6,
         resnet_act_fn: str = "swish",
         spatio_temporal_scale: bool = True,
+        upsample_type: str = "spatiotemporal",
         inject_noise: bool = False,
         timestep_conditioning: bool = False,
         upsample_residual: bool = False,
@@ -746,11 +747,20 @@ class LTX2VideoUpBlock3d(nn.Module):
 
         self.upsamplers = None
         if spatio_temporal_scale:
+            if upsample_type == "spatial":
+                upsample_stride = (1, 2, 2)
+            elif upsample_type == "temporal":
+                upsample_stride = (2, 1, 1)
+            elif upsample_type == "spatiotemporal":
+                upsample_stride = (2, 2, 2)
+            else:
+                raise ValueError(f"Unsupported LTX2 decoder upsample_type: {upsample_type}")
+
             self.upsamplers = nn.ModuleList(
                 [
                     LTXVideoUpsampler3d(
                         out_channels * upscale_factor,
-                        stride=(2, 2, 2),
+                        stride=upsample_stride,
                         residual=upsample_residual,
                         upscale_factor=upscale_factor,
                         spatial_padding_mode=spatial_padding_mode,
@@ -1019,6 +1029,11 @@ class LTX2VideoDecoder3d(nn.Module):
         block_out_channels: Tuple[int, ...] = (256, 512, 1024),
         spatio_temporal_scaling: Tuple[bool, ...] = (True, True, True),
         layers_per_block: Tuple[int, ...] = (5, 5, 5, 5),
+        upsample_type: Tuple[str, ...] = (
+            "spatiotemporal",
+            "spatiotemporal",
+            "spatiotemporal",
+        ),
         patch_size: int = 4,
         patch_size_t: int = 1,
         resnet_norm_eps: float = 1e-6,
@@ -1030,6 +1045,15 @@ class LTX2VideoDecoder3d(nn.Module):
         spatial_padding_mode: str = "reflect",
     ) -> None:
         super().__init__()
+        num_decoder_blocks = len(layers_per_block)
+        if isinstance(spatio_temporal_scaling, bool):
+            spatio_temporal_scaling = (spatio_temporal_scaling,) * (
+                num_decoder_blocks - 1
+            )
+        if isinstance(inject_noise, bool):
+            inject_noise = (inject_noise,) * num_decoder_blocks
+        if isinstance(upsample_residual, bool):
+            upsample_residual = (upsample_residual,) * (num_decoder_blocks - 1)
 
         self.patch_size = patch_size
         self.patch_size_t = patch_size_t
@@ -1074,6 +1098,7 @@ class LTX2VideoDecoder3d(nn.Module):
                 num_layers=layers_per_block[i + 1],
                 resnet_eps=resnet_norm_eps,
                 spatio_temporal_scale=spatio_temporal_scaling[i],
+                upsample_type=upsample_type[i],
                 inject_noise=inject_noise[i + 1],
                 timestep_conditioning=timestep_conditioning,
                 upsample_residual=upsample_residual[i],
@@ -1410,6 +1435,15 @@ class AutoencoderKLLTX2Video(ParallelTiledVAE):
             upsample_factor = (upsample_factor,) * 3
         else:
             upsample_factor = tuple(upsample_factor)
+        upsample_type = getattr(
+            config.arch_config,
+            "upsample_type",
+            ("spatiotemporal", "spatiotemporal", "spatiotemporal"),
+        )
+        if isinstance(upsample_type, str):
+            upsample_type = (upsample_type,) * len(upsample_factor)
+        else:
+            upsample_type = tuple(upsample_type)
         timestep_conditioning = getattr(
             config.arch_config, "timestep_conditioning", False
         )
@@ -1472,6 +1506,7 @@ class AutoencoderKLLTX2Video(ParallelTiledVAE):
                 block_out_channels=decoder_block_out_channels,
                 spatio_temporal_scaling=decoder_spatio_temporal_scaling,
                 layers_per_block=decoder_layers_per_block,
+                upsample_type=upsample_type,
                 patch_size=patch_size,
                 patch_size_t=patch_size_t,
                 resnet_norm_eps=resnet_norm_eps,

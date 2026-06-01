@@ -449,14 +449,14 @@ class LTX23VocoderCore(nn.Module):
         self.apply_final_activation = apply_final_activation
         self.is_amp = resblock == "AMP1"
 
-        self.conv_pre = nn.Conv1d(
+        self.conv_in = nn.Conv1d(
             in_channels=128,
             out_channels=upsample_initial_channel,
             kernel_size=7,
             stride=1,
             padding=3,
         )
-        self.ups = nn.ModuleList(
+        self.upsamplers = nn.ModuleList(
             nn.ConvTranspose1d(
                 upsample_initial_channel // (2**i),
                 upsample_initial_channel // (2 ** (i + 1)),
@@ -470,14 +470,14 @@ class LTX23VocoderCore(nn.Module):
         )
 
         final_channels = upsample_initial_channel // (2 ** len(upsample_rates))
-        self.resblocks = nn.ModuleList()
+        self.resnets = nn.ModuleList()
         for i in range(len(upsample_rates)):
             channels = upsample_initial_channel // (2 ** (i + 1))
             for kernel_size, dilations in zip(
                 resblock_kernel_sizes, resblock_dilation_sizes, strict=True
             ):
                 if self.is_amp:
-                    self.resblocks.append(
+                    self.resnets.append(
                         AMPBlock1(
                             channels,
                             kernel_size,
@@ -486,7 +486,7 @@ class LTX23VocoderCore(nn.Module):
                         )
                     )
                 else:
-                    self.resblocks.append(
+                    self.resnets.append(
                         ResBlock(
                             channels,
                             kernel_size=kernel_size,
@@ -496,10 +496,10 @@ class LTX23VocoderCore(nn.Module):
                         )
                     )
 
-        self.act_post = (
+        self.act_out = (
             Activation1d(SnakeBeta(final_channels)) if self.is_amp else nn.LeakyReLU()
         )
-        self.conv_post = nn.Conv1d(
+        self.conv_out = nn.Conv1d(
             in_channels=final_channels,
             out_channels=2,
             kernel_size=7,
@@ -514,21 +514,21 @@ class LTX23VocoderCore(nn.Module):
             assert x.shape[1] == 2, "Input must have 2 channels for stereo"
             x = einops.rearrange(x, "b s c t -> b (s c) t")
 
-        x = self.conv_pre(x)
+        x = self.conv_in(x)
         for i in range(self.num_upsamples):
             if not self.is_amp:
                 x = F.leaky_relu(x, LRELU_SLOPE)
-            x = self.ups[i](x)
+            x = self.upsamplers[i](x)
             start = i * self.num_kernels
             end = start + self.num_kernels
             block_outputs = torch.stack(
-                [self.resblocks[idx](x) for idx in range(start, end)],
+                [self.resnets[idx](x) for idx in range(start, end)],
                 dim=0,
             )
             x = block_outputs.mean(dim=0)
 
-        x = self.act_post(x)
-        x = self.conv_post(x)
+        x = self.act_out(x)
+        x = self.conv_out(x)
         if self.apply_final_activation:
             x = torch.tanh(x) if self.use_tanh_at_final else torch.clamp(x, -1, 1)
         return x
@@ -543,10 +543,10 @@ class LTX2Vocoder(ABC, nn.Module, LayerwiseOffloadableModuleMixin):
     layer_names = [
         "upsamplers",
         "resnets",
-        "vocoder.ups",
-        "vocoder.resblocks",
-        "bwe_generator.ups",
-        "bwe_generator.resblocks",
+        "vocoder.upsamplers",
+        "vocoder.resnets",
+        "bwe_generator.upsamplers",
+        "bwe_generator.resnets",
     ]
 
     def __init__(

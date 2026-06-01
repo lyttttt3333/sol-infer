@@ -12,12 +12,18 @@ from sglang.multimodal_gen.runtime.loader.utils import (
     set_default_torch_dtype,
     skip_init_modules,
 )
+from sglang.multimodal_gen.runtime.loader.weight_utils import (
+    filter_duplicate_safetensors_files,
+)
 from sglang.multimodal_gen.runtime.models.registry import ModelRegistry
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.hf_diffusers_utils import (
     get_diffusers_component_config,
 )
+from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
+
+logger = init_logger(__name__)
 
 
 class AdapterLoader(ComponentLoader):
@@ -25,7 +31,7 @@ class AdapterLoader(ComponentLoader):
 
     This loader intentionally avoids FSDP sharding and just:
     1) Instantiates the module from `config.json`.
-    2) Loads a single safetensors state_dict.
+    2) Loads one or more safetensors shards into the module state_dict.
     """
 
     component_names = ["connectors"]
@@ -61,14 +67,29 @@ class AdapterLoader(ComponentLoader):
             )
 
         safetensors_list = _list_safetensors_files(component_model_path)
+        safetensors_list = filter_duplicate_safetensors_files(
+            safetensors_list,
+            component_model_path,
+            "diffusion_pytorch_model.safetensors.index.json",
+        )
         if not safetensors_list:
             raise ValueError(f"No safetensors files found in {component_model_path}")
-        if len(safetensors_list) != 1:
-            raise ValueError(
-                f"Found {len(safetensors_list)} safetensors files in {component_model_path}, expected 1"
-            )
 
-        loaded = safetensors_load_file(safetensors_list[0])
-        model.load_state_dict(loaded, strict=False)
+        loaded = {}
+        for safetensors_path in safetensors_list:
+            loaded.update(safetensors_load_file(safetensors_path))
+        load_result = model.load_state_dict(loaded, strict=False)
+        if load_result.missing_keys or load_result.unexpected_keys:
+            missing = list(load_result.missing_keys)
+            unexpected = list(load_result.unexpected_keys)
+            logger.warning(
+                "Loaded adapter %s with %d missing keys=%s and "
+                "%d unexpected keys=%s",
+                component_model_path,
+                len(missing),
+                missing[:20],
+                len(unexpected),
+                unexpected[:20],
+            )
 
         return model

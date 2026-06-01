@@ -59,6 +59,9 @@ WARMUP="${WARMUP:-false}"
 WARMUP_STEPS="${WARMUP_STEPS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 MASTER_PORT="${MASTER_PORT:-30005}"
+PERFORMANCE_MODE="${PERFORMANCE_MODE:-${SGLANG_LTX2_PERFORMANCE_MODE:-speed}}"
+TWO_STAGE_DEVICE_MODE="${TWO_STAGE_DEVICE_MODE:-${SGLANG_LTX2_TWO_STAGE_DEVICE_MODE:-resident}}"
+export PERFORMANCE_MODE TWO_STAGE_DEVICE_MODE
 
 for required in "$PYTHON_BIN" "$MODEL_PATH/model_index.json" "$DISTILLED_LORA" "$SPATIAL_UPSAMPLER"; do
   if [[ ! -e "$required" ]]; then
@@ -334,6 +337,30 @@ if [[ -n "$ATTENTION_BACKEND_CONFIG" ]]; then
   EXTRA_GENERATE_ARGS+=(--attention-backend-config "$ATTENTION_BACKEND_CONFIG")
 fi
 EXTRA_ARG_TEXT="${EXTRA_GENERATE_ARGS[*]:-}"
+OFFLOAD_ARGS=()
+if [[ "${SGLANG_LTX2_DIT_CPU_OFFLOAD:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  OFFLOAD_ARGS+=(--dit-cpu-offload true)
+fi
+if [[ "${SGLANG_LTX2_TEXT_ENCODER_CPU_OFFLOAD:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  OFFLOAD_ARGS+=(--text-encoder-cpu-offload true)
+fi
+if [[ "${SGLANG_LTX2_VAE_CPU_OFFLOAD:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  OFFLOAD_ARGS+=(--vae-cpu-offload true)
+fi
+if [[ "${SGLANG_LTX2_DIT_LAYERWISE_OFFLOAD:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  OFFLOAD_ARGS+=(--dit-layerwise-offload true)
+fi
+if [[ -n "${SGLANG_LTX2_LAYERWISE_OFFLOAD_COMPONENTS:-}" ]]; then
+  read -r -a layerwise_components <<< "$SGLANG_LTX2_LAYERWISE_OFFLOAD_COMPONENTS"
+  OFFLOAD_ARGS+=(--layerwise-offload-components "${layerwise_components[@]}")
+fi
+if [[ -n "${SGLANG_LTX2_DIT_OFFLOAD_PREFETCH_SIZE:-}" ]]; then
+  OFFLOAD_ARGS+=(--dit-offload-prefetch-size "$SGLANG_LTX2_DIT_OFFLOAD_PREFETCH_SIZE")
+fi
+if [[ -n "${SGLANG_LTX2_PIN_CPU_MEMORY:-}" ]]; then
+  OFFLOAD_ARGS+=(--pin-cpu-memory "$SGLANG_LTX2_PIN_CPU_MEMORY")
+fi
+OFFLOAD_ARG_TEXT="${OFFLOAD_ARGS[*]:-}"
 
 mkdir -p "$OUT_DIR"
 if [[ "$FORCE" != "1" && -s "$OUT_VIDEO" && -s "$PERF_JSON" ]]; then
@@ -352,8 +379,9 @@ $PYTHON_BIN -m sglang.multimodal_gen.runtime.entrypoints.cli.main generate \\
   --component-paths.distilled_lora "$DISTILLED_LORA" \\
   --num-gpus 1 \\
   --master-port "$MASTER_PORT" \\
-  --performance-mode speed \\
-  --ltx2-two-stage-device-mode resident \\
+  --performance-mode "$PERFORMANCE_MODE" \\
+  --ltx2-two-stage-device-mode "$TWO_STAGE_DEVICE_MODE" \\
+  $OFFLOAD_ARG_TEXT \\
   --warmup "$WARMUP" --warmup-steps "$WARMUP_STEPS" \\
   --height 1088 --width 1920 --num-frames 241 --fps 24 --seed 42 \\
   --num-inference-steps 15 --guidance-scale 3.0 \\
@@ -366,6 +394,7 @@ EOF
 
 "$PYTHON_BIN" - <<'PYINFO' "$OUT_DIR" "$VARIANT" "$MODEL_PATH" "$DISTILLED_LORA" "$SPATIAL_UPSAMPLER" "$CACHE_ALGO" "$COMPONENT_ATTENTION_BACKENDS" "$ATTENTION_BACKEND_CONFIG"
 import json
+import os
 import sys
 from pathlib import Path
 out_dir = Path(sys.argv[1])
@@ -382,6 +411,13 @@ summary = {
     "stage2_sigmas": [0.909375, 0.725, 0.421875, 0.0],
     "stage2_steps": 3,
     "stage2_sampler": "res2s",
+    "performance_mode": os.environ.get("PERFORMANCE_MODE", "speed"),
+    "two_stage_device_mode": os.environ.get("TWO_STAGE_DEVICE_MODE", "resident"),
+    "dit_cpu_offload": os.environ.get("SGLANG_LTX2_DIT_CPU_OFFLOAD", "0").lower() in {"1", "true", "yes", "on"},
+    "text_encoder_cpu_offload": os.environ.get("SGLANG_LTX2_TEXT_ENCODER_CPU_OFFLOAD", "0").lower() in {"1", "true", "yes", "on"},
+    "vae_cpu_offload": os.environ.get("SGLANG_LTX2_VAE_CPU_OFFLOAD", "0").lower() in {"1", "true", "yes", "on"},
+    "dit_layerwise_offload": os.environ.get("SGLANG_LTX2_DIT_LAYERWISE_OFFLOAD", "0").lower() in {"1", "true", "yes", "on"},
+    "pin_cpu_memory": os.environ.get("SGLANG_LTX2_PIN_CPU_MEMORY", "true").lower() not in {"0", "false", "no", "off"},
     "stage1_lora_strength": 0.25,
     "stage2_lora_strength": 0.5,
     "video_cfg_scale": 3.0,
@@ -465,8 +501,9 @@ fi
   --component-paths.distilled_lora "$DISTILLED_LORA" \
   --num-gpus 1 \
   --master-port "$MASTER_PORT" \
-  --performance-mode speed \
-  --ltx2-two-stage-device-mode resident \
+  --performance-mode "$PERFORMANCE_MODE" \
+  --ltx2-two-stage-device-mode "$TWO_STAGE_DEVICE_MODE" \
+  "${OFFLOAD_ARGS[@]}" \
   --warmup "$WARMUP" \
   --warmup-steps "$WARMUP_STEPS" \
   --height 1088 \

@@ -49,6 +49,14 @@ class LTXVideoVAEArchConfig(VAEArchConfig):
         default_factory=lambda: [True, True, True]
     )
     decoder_layers_per_block: List[int] = field(default_factory=lambda: [5, 5, 5, 5])
+    decoder_inject_noise: List[bool] = field(
+        default_factory=lambda: [False, False, False, False]
+    )
+    upsample_type: List[str] = field(
+        default_factory=lambda: ["spatiotemporal", "spatiotemporal", "spatiotemporal"]
+    )
+    upsample_residual: List[bool] = field(default_factory=lambda: [True, True, True])
+    upsample_factor: List[int] = field(default_factory=lambda: [2, 2, 2])
     decoder_causal: bool = False
     decoder_spatial_padding_mode: str = "reflect"
 

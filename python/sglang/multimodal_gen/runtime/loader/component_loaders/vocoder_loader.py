@@ -20,6 +20,58 @@ from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 logger = init_logger(__name__)
 
 
+def _ltx2_vocoder_core_config(config: dict, prefix: str = "") -> dict:
+    def get(name: str, default=None):
+        return config.get(f"{prefix}{name}", default)
+
+    act_fn = get("act_fn", "snake")
+    final_act_fn = get("final_act_fn", "tanh")
+
+    return {
+        "resblock_kernel_sizes": get("resnet_kernel_sizes"),
+        "upsample_rates": get("upsample_factors"),
+        "upsample_kernel_sizes": get("upsample_kernel_sizes"),
+        "resblock_dilation_sizes": get("resnet_dilations"),
+        "upsample_initial_channel": get("hidden_channels", 1024),
+        "resblock": "AMP1" if str(act_fn).lower() in ("snake", "snakebeta") else "1",
+        "activation": act_fn,
+        "use_tanh_at_final": str(final_act_fn).lower() == "tanh",
+        "apply_final_activation": final_act_fn is not None,
+        "use_bias_at_final": bool(get("final_bias", True)),
+    }
+
+
+def _maybe_add_ltx2_vocoder_bwe_config(config: dict, vocoder_config) -> None:
+    if not any(key.startswith("bwe_") for key in config):
+        return
+
+    vocoder_config.arch_config.vocoder = {
+        "vocoder": _ltx2_vocoder_core_config(config),
+        "bwe": {
+            **_ltx2_vocoder_core_config(config, prefix="bwe_"),
+            "input_sampling_rate": config["input_sampling_rate"],
+            "output_sampling_rate": config["output_sampling_rate"],
+            "n_fft": config["filter_length"],
+            "hop_length": config["hop_length"],
+            "win_size": config.get("window_length", config["filter_length"]),
+            "num_mels": config["num_mel_channels"],
+        },
+    }
+
+
+def _remap_ltx2_vocoder_state_dict(
+    loaded: dict, target_keys: set[str]
+) -> dict:
+    remapped = {}
+    for key, value in loaded.items():
+        mapped_key = key.replace(".downsample.filter", ".downsample.lowpass.filter")
+        if mapped_key != key and mapped_key in target_keys:
+            remapped[mapped_key] = value
+        else:
+            remapped[key] = value
+    return remapped
+
+
 class VocoderLoader(ComponentLoader):
     component_names = ["vocoder"]
     expected_library = "diffusers"
@@ -37,6 +89,8 @@ class VocoderLoader(ComponentLoader):
         assert (
             class_name is not None
         ), "Model config does not contain a _class_name attribute. Only diffusers format is supported."
+        if class_name == "LTX2VocoderWithBWE":
+            class_name = "LTX2Vocoder"
 
         server_args.model_paths[component_name] = component_model_path
 
@@ -46,6 +100,7 @@ class VocoderLoader(ComponentLoader):
 
         vocoder_config = LTXVocoderConfig()
         vocoder_config.update_model_arch(config)
+        _maybe_add_ltx2_vocoder_bwe_config(config, vocoder_config)
 
         try:
             vocoder_precision = server_args.pipeline_config.audio_vae_precision
@@ -65,6 +120,9 @@ class VocoderLoader(ComponentLoader):
             len(safetensors_list) == 1
         ), f"Found {len(safetensors_list)} safetensors files in {component_model_path}"
         loaded = safetensors_load_file(safetensors_list[0])
+        loaded = _remap_ltx2_vocoder_state_dict(
+            loaded, target_keys=set(vocoder.state_dict().keys())
+        )
         incompatible = vocoder.load_state_dict(loaded, strict=False)
         missing_keys = []
         unexpected_keys = []

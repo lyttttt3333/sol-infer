@@ -50,6 +50,9 @@ WARMUP="${WARMUP:-false}"
 WARMUP_STEPS="${WARMUP_STEPS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 MASTER_PORT="${MASTER_PORT:-30005}"
+PERFORMANCE_MODE="${PERFORMANCE_MODE:-${SGLANG_LTX2_PERFORMANCE_MODE:-speed}}"
+TWO_STAGE_DEVICE_MODE="${TWO_STAGE_DEVICE_MODE:-${SGLANG_LTX2_TWO_STAGE_DEVICE_MODE:-resident}}"
+export PERFORMANCE_MODE TWO_STAGE_DEVICE_MODE
 
 for required in "$PYTHON_BIN" "$MODEL_PATH/model_index.json" "$DISTILLED_LORA" "$SPATIAL_UPSAMPLER"; do
   if [[ ! -e "$required" ]]; then
@@ -233,6 +236,30 @@ ATTENTION_ARGS=(--component-attention-backends "$COMPONENT_ATTENTION_BACKENDS")
 if [[ -n "$ATTENTION_BACKEND_CONFIG" ]]; then
   ATTENTION_ARGS+=(--attention-backend-config "$ATTENTION_BACKEND_CONFIG")
 fi
+OFFLOAD_ARGS=()
+if [[ "${SGLANG_LTX2_DIT_CPU_OFFLOAD:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  OFFLOAD_ARGS+=(--dit-cpu-offload true)
+fi
+if [[ "${SGLANG_LTX2_TEXT_ENCODER_CPU_OFFLOAD:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  OFFLOAD_ARGS+=(--text-encoder-cpu-offload true)
+fi
+if [[ "${SGLANG_LTX2_VAE_CPU_OFFLOAD:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  OFFLOAD_ARGS+=(--vae-cpu-offload true)
+fi
+if [[ "${SGLANG_LTX2_DIT_LAYERWISE_OFFLOAD:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  OFFLOAD_ARGS+=(--dit-layerwise-offload true)
+fi
+if [[ -n "${SGLANG_LTX2_LAYERWISE_OFFLOAD_COMPONENTS:-}" ]]; then
+  read -r -a layerwise_components <<< "$SGLANG_LTX2_LAYERWISE_OFFLOAD_COMPONENTS"
+  OFFLOAD_ARGS+=(--layerwise-offload-components "${layerwise_components[@]}")
+fi
+if [[ -n "${SGLANG_LTX2_DIT_OFFLOAD_PREFETCH_SIZE:-}" ]]; then
+  OFFLOAD_ARGS+=(--dit-offload-prefetch-size "$SGLANG_LTX2_DIT_OFFLOAD_PREFETCH_SIZE")
+fi
+if [[ -n "${SGLANG_LTX2_PIN_CPU_MEMORY:-}" ]]; then
+  OFFLOAD_ARGS+=(--pin-cpu-memory "$SGLANG_LTX2_PIN_CPU_MEMORY")
+fi
+OFFLOAD_ARG_TEXT="${OFFLOAD_ARGS[*]:-}"
 export SGLANG_NONHQ_COMPONENT_ATTENTION_BACKENDS="$COMPONENT_ATTENTION_BACKENDS"
 export SGLANG_NONHQ_ATTENTION_BACKEND_CONFIG="$ATTENTION_BACKEND_CONFIG"
 export SGLANG_NONHQ_SPARSE_ALGO="$SPARSE_ALGO"
@@ -255,8 +282,9 @@ $PYTHON_BIN -m sglang.multimodal_gen.runtime.entrypoints.cli.main generate \
   ${ATTENTION_BACKEND_CONFIG:+--attention-backend-config "$ATTENTION_BACKEND_CONFIG" \
   }--num-gpus 1 \
   --master-port "$MASTER_PORT" \
-  --performance-mode speed \
-  --ltx2-two-stage-device-mode resident \
+  --performance-mode "$PERFORMANCE_MODE" \
+  --ltx2-two-stage-device-mode "$TWO_STAGE_DEVICE_MODE" \
+  $OFFLOAD_ARG_TEXT \
   --warmup "$WARMUP" --warmup-steps "$WARMUP_STEPS" \
   --height "$HEIGHT" --width "$WIDTH" --num-frames "$NUM_FRAMES" --fps "$FPS" --seed "$SEED" \
   --num-inference-steps 30 --guidance-scale 3.0 \
@@ -286,6 +314,13 @@ summary = {
     "fps": int(os.environ.get("FPS", "24")),
     "stage1_steps": 30,
     "stage1_sampler": "euler",
+    "performance_mode": os.environ.get("PERFORMANCE_MODE", "speed"),
+    "two_stage_device_mode": os.environ.get("TWO_STAGE_DEVICE_MODE", "resident"),
+    "dit_cpu_offload": os.environ.get("SGLANG_LTX2_DIT_CPU_OFFLOAD", "0").lower() in {"1", "true", "yes", "on"},
+    "text_encoder_cpu_offload": os.environ.get("SGLANG_LTX2_TEXT_ENCODER_CPU_OFFLOAD", "0").lower() in {"1", "true", "yes", "on"},
+    "vae_cpu_offload": os.environ.get("SGLANG_LTX2_VAE_CPU_OFFLOAD", "0").lower() in {"1", "true", "yes", "on"},
+    "dit_layerwise_offload": os.environ.get("SGLANG_LTX2_DIT_LAYERWISE_OFFLOAD", "0").lower() in {"1", "true", "yes", "on"},
+    "pin_cpu_memory": os.environ.get("SGLANG_LTX2_PIN_CPU_MEMORY", "true").lower() not in {"0", "false", "no", "off"},
     "stage2_sigmas": [0.909375, 0.725, 0.421875, 0.0],
     "stage2_steps": 3,
     "stage2_sampler": "euler",
@@ -330,4 +365,29 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] command written to $OUT_DIR/run_command.txt"
   exit 0
 fi
-"$PYTHON_BIN" -m sglang.multimodal_gen.runtime.entrypoints.cli.main generate   --model-path "$MODEL_PATH"   --backend auto   --pipeline-class-name LTX2TwoStagePipeline   --component-paths.spatial_upsampler "$SPATIAL_UPSAMPLER"   --component-paths.distilled_lora "$DISTILLED_LORA"   "${ATTENTION_ARGS[@]}"   --num-gpus 1   --master-port "$MASTER_PORT"   --performance-mode speed   --ltx2-two-stage-device-mode resident   --warmup "$WARMUP"   --warmup-steps "$WARMUP_STEPS"   --height "$HEIGHT"   --width "$WIDTH"   --num-frames "$NUM_FRAMES"   --fps "$FPS"   --seed "$SEED"   --num-inference-steps 30   --guidance-scale 3.0   --negative-prompt "$NEGATIVE_PROMPT"   --prompt "$PROMPT"   --output-file-path "$OUT_VIDEO"   --perf-dump-path "$PERF_JSON"   --return-file-paths-only true
+"$PYTHON_BIN" -m sglang.multimodal_gen.runtime.entrypoints.cli.main generate \
+  --model-path "$MODEL_PATH" \
+  --backend auto \
+  --pipeline-class-name LTX2TwoStagePipeline \
+  --component-paths.spatial_upsampler "$SPATIAL_UPSAMPLER" \
+  --component-paths.distilled_lora "$DISTILLED_LORA" \
+  "${ATTENTION_ARGS[@]}" \
+  --num-gpus 1 \
+  --master-port "$MASTER_PORT" \
+  --performance-mode "$PERFORMANCE_MODE" \
+  --ltx2-two-stage-device-mode "$TWO_STAGE_DEVICE_MODE" \
+  "${OFFLOAD_ARGS[@]}" \
+  --warmup "$WARMUP" \
+  --warmup-steps "$WARMUP_STEPS" \
+  --height "$HEIGHT" \
+  --width "$WIDTH" \
+  --num-frames "$NUM_FRAMES" \
+  --fps "$FPS" \
+  --seed "$SEED" \
+  --num-inference-steps 30 \
+  --guidance-scale 3.0 \
+  --negative-prompt "$NEGATIVE_PROMPT" \
+  --prompt "$PROMPT" \
+  --output-file-path "$OUT_VIDEO" \
+  --perf-dump-path "$PERF_JSON" \
+  --return-file-paths-only true

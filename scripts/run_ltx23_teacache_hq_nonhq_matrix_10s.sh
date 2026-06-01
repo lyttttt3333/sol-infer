@@ -13,12 +13,18 @@ SEED="${SEED:-42}"
 PYTHON_BIN="${PYTHON_BIN:-$PWD/.conda/ltx23/bin/python}"
 BASE_PORT="${BASE_PORT:-30410}"
 DEVICES_CSV="${DEVICES:-0,1,2,3,4,5,6,7}"
-HQ_VARIANTS_TEXT="${HQ_VARIANTS:-kwl kwl_teacache_c04_s6 kwl_teacache_c06_s5}"
-NONHQ_VARIANTS_TEXT="${NONHQ_VARIANTS:-kwl kwl_cache_teacache_c04_s6 kwl_cache_teacache_c06_s5}"
+MAX_PARALLEL="${MAX_PARALLEL:-0}"
+HQ_VARIANTS_TEXT="${HQ_VARIANTS:-kwl kwl_teacache_c04_s6 kwl_teacache_c06_s5 kwl_teacache_c08_s5}"
+NONHQ_VARIANTS_TEXT="${NONHQ_VARIANTS:-kwl kwl_cache_teacache_c04_s6 kwl_cache_teacache_c06_s5 kwl_cache_teacache_c08_s5}"
+ALLOW_PARTIAL="${ALLOW_PARTIAL:-0}"
 
 IFS=',' read -r -a devices <<< "$DEVICES_CSV"
 read -r -a hq_variants <<< "$HQ_VARIANTS_TEXT"
 read -r -a nonhq_variants <<< "$NONHQ_VARIANTS_TEXT"
+if (( ${#devices[@]} == 0 )); then
+  echo "[error] DEVICES must contain at least one GPU id" >&2
+  exit 2
+fi
 
 prompts=(
   "${PROMPT_0:-A cinematic 10 second close-up of an elderly woman ceramic artist shaping a blue clay vase on a pottery wheel, warm window light, realistic hands, fine clay texture, smooth camera movement, high detail}"
@@ -46,9 +52,9 @@ done
 variant_label() {
   case "$1" in
     kwl) echo "KWL baseline" ;;
-    kwl_teacache_c04_s6|kwl_cache_teacache_c04_s6) echo "TeaCache t=0.04 s=6" ;;
-    kwl_teacache_c06_s5|kwl_cache_teacache_c06_s5) echo "TeaCache t=0.06 s=5" ;;
-    kwl_teacache_c08_s5|kwl_cache_teacache_c08_s5) echo "TeaCache t=0.08 s=5" ;;
+    kwl_teacache_c04_s6|kwl_cache_teacache_c04_s6) echo "TeaCache t0.04 start6" ;;
+    kwl_teacache_c06_s5|kwl_cache_teacache_c06_s5) echo "TeaCache t0.06 start5" ;;
+    kwl_teacache_c08_s5|kwl_cache_teacache_c08_s5) echo "TeaCache t0.08 start5" ;;
     *) echo "$1" ;;
   esac
 }
@@ -87,6 +93,9 @@ launch_task() {
 
 failed=0
 batch_size=${#devices[@]}
+if (( MAX_PARALLEL > 0 && MAX_PARALLEL < batch_size )); then
+  batch_size="$MAX_PARALLEL"
+fi
 for ((start=0; start<${#task_variants[@]}; start+=batch_size)); do
   pids=()
   for ((slot=0; slot<batch_size; slot++)); do
@@ -95,7 +104,8 @@ for ((start=0; start<${#task_variants[@]}; start+=batch_size)); do
       break
     fi
     port=$((BASE_PORT + idx))
-    launch_task "${task_pipelines[$idx]}" "${task_prompt_indices[$idx]}" "${task_variants[$idx]}" "${devices[$slot]}" "$port"
+    device_index=$((slot % ${#devices[@]}))
+    launch_task "${task_pipelines[$idx]}" "${task_prompt_indices[$idx]}" "${task_variants[$idx]}" "${devices[$device_index]}" "$port"
     pids+=("$!")
   done
   for pid in "${pids[@]}"; do
@@ -106,30 +116,50 @@ for ((start=0; start<${#task_variants[@]}; start+=batch_size)); do
 done
 
 if [[ "$failed" != "0" ]]; then
-  echo "[error] at least one TeaCache matrix task failed; inspect $ROOT/logs" >&2
-  exit 1
+  if [[ "$ALLOW_PARTIAL" =~ ^(1|true|yes|on)$ ]]; then
+    echo "[warn] at least one TeaCache matrix task failed; generating partial report from completed cases" >&2
+  else
+    echo "[error] at least one TeaCache matrix task failed; inspect $ROOT/logs" >&2
+    exit 1
+  fi
 fi
 
 for prompt_idx in "${!prompts[@]}"; do
   hq_args=()
   for variant in "${hq_variants[@]}"; do
     video="$ROOT/hq/prompt_${prompt_idx}/$variant/out.mp4"
-    [[ -s "$video" ]] || { echo "[error] missing $video" >&2; exit 2; }
-    hq_args+=(--item "$(variant_label "$variant")=$video")
+    if [[ -s "$video" ]]; then
+      hq_args+=(--item "$(variant_label "$variant")=$video")
+    elif [[ "$ALLOW_PARTIAL" =~ ^(1|true|yes|on)$ ]]; then
+      echo "[warn] missing $video; omitting from HQ prompt $prompt_idx compare" >&2
+    else
+      echo "[error] missing $video" >&2
+      exit 2
+    fi
   done
-  "$PYTHON_BIN" scripts/make_multiway_video.py "${hq_args[@]}" \
-    --cols "${HQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
-    --out "$ROOT/hq/prompt_${prompt_idx}/compare.mp4"
+  if (( ${#hq_args[@]} >= 4 )); then
+    "$PYTHON_BIN" scripts/make_multiway_video.py "${hq_args[@]}" \
+      --cols "${HQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
+      --out "$ROOT/hq/prompt_${prompt_idx}/compare.mp4"
+  fi
 
   nonhq_args=()
   for variant in "${nonhq_variants[@]}"; do
     video="$ROOT/nonhq/prompt_${prompt_idx}/$variant/out.mp4"
-    [[ -s "$video" ]] || { echo "[error] missing $video" >&2; exit 2; }
-    nonhq_args+=(--item "$(variant_label "$variant")=$video")
+    if [[ -s "$video" ]]; then
+      nonhq_args+=(--item "$(variant_label "$variant")=$video")
+    elif [[ "$ALLOW_PARTIAL" =~ ^(1|true|yes|on)$ ]]; then
+      echo "[warn] missing $video; omitting from non-HQ prompt $prompt_idx compare" >&2
+    else
+      echo "[error] missing $video" >&2
+      exit 2
+    fi
   done
-  "$PYTHON_BIN" scripts/make_multiway_video.py "${nonhq_args[@]}" \
-    --cols "${NONHQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
-    --out "$ROOT/nonhq/prompt_${prompt_idx}/compare.mp4"
+  if (( ${#nonhq_args[@]} >= 4 )); then
+    "$PYTHON_BIN" scripts/make_multiway_video.py "${nonhq_args[@]}" \
+      --cols "${NONHQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
+      --out "$ROOT/nonhq/prompt_${prompt_idx}/compare.mp4"
+  fi
 done
 
 "$PYTHON_BIN" scripts/make_ltx23_cache_report.py \

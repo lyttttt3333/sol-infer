@@ -67,6 +67,8 @@ class LTX2ArchConfig(DiTArchConfig):
             r"^time_embed\.(.*)$": r"adaln_single.\1",
             r"^audio_proj_in\.(.*)$": r"audio_patchify_proj.\1",
             r"^audio_time_embed\.(.*)$": r"audio_adaln_single.\1",
+            r"^prompt_adaln\.(.*)$": r"prompt_adaln_single.\1",
+            r"^audio_prompt_adaln\.(.*)$": r"audio_prompt_adaln_single.\1",
             # FeedForward
             r"(.*)ff\.net\.0\.proj\.(.*)$": r"\1ff.proj_in.\2",
             r"(.*)ff\.net\.2\.(.*)$": r"\1ff.proj_out.\2",
@@ -92,6 +94,8 @@ class LTX2ArchConfig(DiTArchConfig):
             r"^adaln_single\.(.*)$": r"time_embed.\1",
             r"^audio_patchify_proj\.(.*)$": r"audio_proj_in.\1",
             r"^audio_adaln_single\.(.*)$": r"audio_time_embed.\1",
+            r"^prompt_adaln_single\.(.*)$": r"prompt_adaln.\1",
+            r"^audio_prompt_adaln_single\.(.*)$": r"audio_prompt_adaln.\1",
             # FeedForward
             r"(.*)ff\.proj_in\.(.*)$": r"\1ff.net.0.proj.\2",
             r"(.*)ff\.proj_out\.(.*)$": r"\1ff.net.2.\2",
@@ -165,6 +169,48 @@ class LTX2ArchConfig(DiTArchConfig):
 
     def __post_init__(self):
         super().__post_init__()
+        if getattr(self, "cross_attn_mod", None) is not None:
+            self.cross_attention_adaln = bool(getattr(self, "cross_attn_mod"))
+
+        gated_attn = getattr(self, "gated_attn", None)
+        audio_gated_attn = getattr(self, "audio_gated_attn", None)
+        if gated_attn is not None or audio_gated_attn is not None:
+            self.apply_gated_attention = bool(gated_attn) or bool(audio_gated_attn)
+
+        cross_attn_timestep_scale_multiplier = getattr(
+            self, "cross_attn_timestep_scale_multiplier", None
+        )
+        if cross_attn_timestep_scale_multiplier is not None:
+            self.av_ca_timestep_scale_multiplier = int(
+                cross_attn_timestep_scale_multiplier
+            )
+
+        use_prompt_embeddings = getattr(self, "use_prompt_embeddings", None)
+        if use_prompt_embeddings is not None:
+            self.caption_proj_before_connector = not bool(use_prompt_embeddings)
+
+        pos_embed_max_pos = getattr(self, "pos_embed_max_pos", None)
+        base_height = getattr(self, "base_height", None)
+        base_width = getattr(self, "base_width", None)
+        if (
+            pos_embed_max_pos is not None
+            and base_height is not None
+            and base_width is not None
+        ):
+            self.positional_embedding_max_pos = [
+                int(pos_embed_max_pos),
+                int(base_height),
+                int(base_width),
+            ]
+
+        audio_pos_embed_max_pos = getattr(self, "audio_pos_embed_max_pos", None)
+        if audio_pos_embed_max_pos is not None:
+            self.audio_positional_embedding_max_pos = [int(audio_pos_embed_max_pos)]
+
+        rope_theta = getattr(self, "rope_theta", None)
+        if rope_theta is not None:
+            self.positional_embedding_theta = float(rope_theta)
+
         # Video derived values
         self.hidden_size = self.num_attention_heads * self.attention_head_dim
         self.num_channels_latents = self.out_channels

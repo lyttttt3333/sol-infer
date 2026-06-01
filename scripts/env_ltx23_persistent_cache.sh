@@ -21,6 +21,7 @@ mkdir -p \
   "$LTX23_CACHE_ROOT/torchinductor" \
   "$LTX23_CACHE_ROOT/torch_extensions" \
   "$LTX23_CACHE_ROOT/cuda" \
+  "$LTX23_CACHE_ROOT/c_headers" \
   "$LTX23_CACHE_ROOT/sgl_diffusion" \
   "$LTX23_CACHE_ROOT/tmp"
 
@@ -37,3 +38,12 @@ export SGLANG_DIFFUSION_CACHE_ROOT="${SGLANG_DIFFUSION_CACHE_ROOT:-$LTX23_CACHE_
 export TMPDIR="${TMPDIR:-$LTX23_CACHE_ROOT/tmp}"
 export TMP="${TMP:-$TMPDIR}"
 export TEMP="${TEMP:-$TMPDIR}"
+
+# Some cluster images expose a conda Python built with HAVE_CRYPT_H while the
+# compute node lacks the libxcrypt development header. Triton launcher JIT only
+# needs Python.h, not crypt(), so a local empty header keeps those JIT kernels
+# buildable without requiring system package changes.
+if ! printf '#include <crypt.h>\n' | "${CC:-cc}" -E - >/dev/null 2>&1; then
+  printf '#pragma once\n' > "$LTX23_CACHE_ROOT/c_headers/crypt.h"
+  export CPATH="$LTX23_CACHE_ROOT/c_headers:${CPATH:-}"
+fi

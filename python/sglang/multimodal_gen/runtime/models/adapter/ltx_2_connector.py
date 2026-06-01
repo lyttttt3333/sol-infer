@@ -554,12 +554,20 @@ class LTX2TextConnectors(nn.Module):
         audio_connector_num_learnable_registers = (
             config.audio_connector_num_learnable_registers
         )
+        video_hidden_dim = int(getattr(config, "video_hidden_dim", 0) or 0)
+        audio_hidden_dim = int(getattr(config, "audio_hidden_dim", 0) or 0)
         connector_rope_base_seq_len = config.connector_rope_base_seq_len
         rope_theta = config.rope_theta
         rope_double_precision = config.rope_double_precision
         causal_temporal_positioning = config.causal_temporal_positioning
         rope_type = config.rope_type
-        connector_apply_gated_attention = config.connector_apply_gated_attention
+        connector_apply_gated_attention = bool(config.connector_apply_gated_attention)
+        video_apply_gated_attention = connector_apply_gated_attention or bool(
+            getattr(config, "video_gated_attn", False)
+        )
+        audio_apply_gated_attention = connector_apply_gated_attention or bool(
+            getattr(config, "audio_gated_attn", False)
+        )
         feature_extractor_in_features = config.feature_extractor_in_features
         video_feature_extractor_out_features = (
             config.video_feature_extractor_out_features
@@ -567,11 +575,46 @@ class LTX2TextConnectors(nn.Module):
         audio_feature_extractor_out_features = (
             config.audio_feature_extractor_out_features
         )
+        per_modality_projections = bool(
+            getattr(config, "per_modality_projections", False)
+        )
+        proj_bias = bool(getattr(config, "proj_bias", False))
+
+        video_connector_dim = (
+            video_connector_num_attention_heads * video_connector_attention_head_dim
+        )
+        audio_connector_dim = (
+            audio_connector_num_attention_heads * audio_connector_attention_head_dim
+        )
+        if video_hidden_dim <= 0:
+            video_hidden_dim = video_connector_dim
+        if audio_hidden_dim <= 0:
+            audio_hidden_dim = audio_connector_dim
+        if per_modality_projections and video_hidden_dim != video_connector_dim:
+            raise ValueError(
+                "video_hidden_dim must match video connector width, got "
+                f"{video_hidden_dim=} {video_connector_dim=}."
+            )
+        if per_modality_projections and audio_hidden_dim != audio_connector_dim:
+            raise ValueError(
+                "audio_hidden_dim must match audio connector width, got "
+                f"{audio_hidden_dim=} {audio_connector_dim=}."
+            )
 
         self.text_proj_in: nn.Linear | None = None
+        self.video_text_proj_in: nn.Linear | None = None
+        self.audio_text_proj_in: nn.Linear | None = None
         self.video_aggregate_embed: nn.Linear | None = None
         self.audio_aggregate_embed: nn.Linear | None = None
-        if (
+        if per_modality_projections:
+            in_features = caption_channels * text_proj_in_factor
+            self.video_text_proj_in = nn.Linear(
+                in_features, video_hidden_dim, bias=proj_bias
+            )
+            self.audio_text_proj_in = nn.Linear(
+                in_features, audio_hidden_dim, bias=proj_bias
+            )
+        elif (
             feature_extractor_in_features > 0
             and video_feature_extractor_out_features > 0
             and audio_feature_extractor_out_features > 0
@@ -600,7 +643,7 @@ class LTX2TextConnectors(nn.Module):
             rope_double_precision=rope_double_precision,
             causal_temporal_positioning=causal_temporal_positioning,
             rope_type=rope_type,
-            apply_gated_attention=connector_apply_gated_attention,
+            apply_gated_attention=video_apply_gated_attention,
         )
         self.audio_connector = LTX2ConnectorTransformer1d(
             num_attention_heads=audio_connector_num_attention_heads,
@@ -612,7 +655,7 @@ class LTX2TextConnectors(nn.Module):
             rope_double_precision=rope_double_precision,
             causal_temporal_positioning=causal_temporal_positioning,
             rope_type=rope_type,
-            apply_gated_attention=connector_apply_gated_attention,
+            apply_gated_attention=audio_apply_gated_attention,
         )
 
     @staticmethod
@@ -652,6 +695,22 @@ class LTX2TextConnectors(nn.Module):
                 attention_mask = F.pad(attention_mask, (0, pad_len), value=-1000000.0)
 
         if (
+            self.video_text_proj_in is not None
+            and self.audio_text_proj_in is not None
+        ):
+            video_hidden_states = text_encoder_hidden_states
+            audio_hidden_states = text_encoder_hidden_states
+            if video_hidden_states.dtype != self.video_text_proj_in.weight.dtype:
+                video_hidden_states = video_hidden_states.to(
+                    self.video_text_proj_in.weight.dtype
+                )
+            if audio_hidden_states.dtype != self.audio_text_proj_in.weight.dtype:
+                audio_hidden_states = audio_hidden_states.to(
+                    self.audio_text_proj_in.weight.dtype
+                )
+            video_hidden_states = self.video_text_proj_in(video_hidden_states)
+            audio_hidden_states = self.audio_text_proj_in(audio_hidden_states)
+        elif (
             self.video_aggregate_embed is not None
             and self.audio_aggregate_embed is not None
         ):
