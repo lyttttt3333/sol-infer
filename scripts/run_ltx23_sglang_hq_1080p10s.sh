@@ -27,7 +27,7 @@ export TORCH_EXTENSIONS_DIR="$PWD/outputs/.cache/torch_extensions"
 export CUDA_CACHE_PATH="$PWD/outputs/.cache/cuda"
 export CUDA_CACHE_MAXSIZE="${CUDA_CACHE_MAXSIZE:-4294967296}"
 export SGLANG_DIFFUSION_CACHE_ROOT="$PWD/outputs/.cache/sgl_diffusion"
-export TMPDIR="$PWD/outputs/.tmp"
+export TMPDIR="${SGLANG_HQ_TMPDIR:-$PWD/outputs/.tmp}"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$PWD/python:${PYTHONPATH:-}"
 # LTX-2.3 official selects FlashAttention4 for unmasked DiT attention on B200.
