@@ -281,6 +281,63 @@ TE NVFP4 video FFN proj_in/proj_out
 Therefore the 46s number is not a purely lossless KWL result. For a stricter comparison, run
 `SGLANG_HQ_VARIANT=kwl` without cache, sparse attention, or TE NVFP4.
 
+
+## 45s-Aligned Kernel-Only Follow-up
+
+After restoring the accepted 45s HQ boundary, commit `66c3a010e` exposes additional HQ KWL
+kernel switches without changing their defaults. The baseline remains unchanged unless the new
+switches are explicitly set.
+
+Same-node comparison, warmup excluded, same prompt/seed, same stage-1 cache preset and same
+stage-2 PISA config:
+
+```text
+artifact root: outputs/ltx23-hq-45aligned-kernelopts-1080p10s
+baseline_45aligned total: 46.600 s
+  stage1: 25.868 s
+  stage2: 14.983 s
+  decode: 5.479 s
+kernel_only_opts total: 45.083 s
+  stage1: 25.120 s
+  stage2: 14.388 s
+  decode: 5.345 s
+speedup vs same-run baseline: 1.034x
+```
+
+The aligned invariants were verified in both `hq_semantics.json` files:
+
+```text
+stage1_cache_core_preset=8of15_last_29calls
+component_attention_backends=transformer=fa,transformer_2=piecewise_attn
+piecewise_sparsity=0.9
+piecewise_block_size=64
+piecewise_approx_remainder=true
+piecewise_route_mode=score
+```
+
+Extra switches requested for `kernel_only_opts`:
+
+```text
+SGLANG_HQ_KWL_FUSED_CA_DUAL_MODULATE=1
+SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT_RESIDUAL=1
+SGLANG_HQ_ENABLE_TE_NVFP4_FUSED_PROJ_IN_GELU=1
+SGLANG_HQ_ENABLE_TE_NVFP4_FUSED_PROJ_OUT_BIAS_GATE=1
+```
+
+Runtime caveat: `TE NVFP4 fused proj_in+GELU` fell back at runtime with a cuBLAS unsupported-parameter
+error, so the measured `1.034x` should not be attributed to that path. Further isolated ablation is
+needed to split the gain between CA dual modulation, gate-to-out residual compile, TE proj-out epilogue,
+and normal run-to-run variance.
+
+Artifacts:
+
+```bash
+outputs/ltx23-hq-45aligned-kernelopts-1080p10s/summary_kernel_only_opts.json
+outputs/ltx23-hq-45aligned-kernelopts-1080p10s/baseline_45aligned/out.mp4
+outputs/ltx23-hq-45aligned-kernelopts-1080p10s/kernel_only_opts/out.mp4
+outputs/ltx23-hq-45aligned-kernelopts-1080p10s/baseline-vs-kernel-only-side-by-side.mp4
+```
+
 ## Useful Comparison Artifacts
 
 ```bash
