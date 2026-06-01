@@ -118,10 +118,10 @@ export SGLANG_DIFFUSION_DECODE_PROFILE=1
 ```
 
 
-### LTX 2.3 45s HQ Quality-Aligned Baseline
+### LTX 2.3 44.9s HQ Quality-Aligned Recommended Path
 
 The accepted optimization target for this branch is the HQ 1080p 10s recipe in
-`README_LTX23_46S_HQ.md`. That path keeps the HQ two-stage pipeline and uses:
+`README_LTX23_46S_HQ.md`. The current recommended path keeps the HQ two-stage pipeline and uses:
 
 ```text
 stage-1 cache preset: 8of15_last_29calls
@@ -130,7 +130,8 @@ stage-2 PISA block size: 64
 stage-2 PISA approx_remainder: true
 stage-2 PISA route_mode: score
 selective FP4: TE NVFP4 video FFN only
-measured total: 45.871 s
+extra kernel-only add-on: cross-attention dual modulation fusion
+measured total: 44.921 s
 ```
 
 Changing the PISA/cache algorithm parameters is not a valid speedup for this baseline.
@@ -150,7 +151,7 @@ cache/PISA semantics include:
 
 - TE NVFP4 FFN epilogues: `proj_in + GELU` and `proj_out + bias + residual + gate`.
 - ModelOpt/CUTLASS FP4 GEMM epilogues: `bias + GELU` and `bias + residual + gate`.
-- Cross-attention dual modulation fusion.
+- Cross-attention dual modulation fusion: validated as the current recommended add-on (`1.024x` same-node speedup).
 - Compile/cache path fixes under `outputs/.cache`.
 
 

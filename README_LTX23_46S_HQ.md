@@ -1,26 +1,27 @@
-# LTX-2.3 HQ 1080p 10s 46s Single-GPU Run
+# LTX-2.3 HQ 1080p 10s 44.9s Single-GPU Run
 
 This note documents the current fastest LTX-2.3 HQ single-GPU 1080p 10s run in this repo.
 The measured run is the SGLang HQ pipeline with KWL kernels, stage-1 cache-core,
-stage-2 piecewise sparse video self-attention, and Transformer Engine NVFP4 video FFN linears.
+stage-2 piecewise sparse video self-attention, Transformer Engine NVFP4 video FFN linears,
+and cross-attention dual modulation fusion.
 
 ## Measured Result
 
 Artifact directory:
 
 ```bash
-outputs/ltx23-hq-best-plus-nvfp4-1080p10s/allkwl_cache8_pisa_preproj_ropecache_te_nvfp4
+outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s/ca_dual_only
 ```
 
 Measured `perf.json`:
 
 ```text
-total: 45.871 s
-stage 1 denoise: 25.039 s
-stage 2 refinement: 14.889 s
-VAE decode: 5.768 s
-text encoder: 0.085 s
-text connector: 0.034 s
+total: 44.921 s
+stage 1 denoise: 24.567 s
+stage 2 refinement: 14.244 s
+VAE decode: 5.937 s
+text encoder: 0.083 s
+text connector: 0.033 s
 ```
 
 The measurement is the request/runtime duration emitted by `--perf-dump-path`. It excludes
@@ -30,10 +31,10 @@ on a B200-class node.
 Main artifacts:
 
 ```bash
-outputs/ltx23-hq-best-plus-nvfp4-1080p10s/allkwl_cache8_pisa_preproj_ropecache_te_nvfp4/out.mp4
-outputs/ltx23-hq-best-plus-nvfp4-1080p10s/allkwl_cache8_pisa_preproj_ropecache_te_nvfp4/perf.json
-outputs/ltx23-hq-best-plus-nvfp4-1080p10s/allkwl_cache8_pisa_preproj_ropecache_te_nvfp4/hq_semantics.json
-outputs/ltx23-hq-best-plus-nvfp4-1080p10s/bf16_vs_te_nvfp4_side_by_side.mp4
+outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s/ca_dual_only/out.mp4
+outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s/ca_dual_only/perf.json
+outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s/ca_dual_only/hq_semantics.json
+outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s/baseline-vs-ca-dual-side-by-side.mp4
 ```
 
 ## Launch
@@ -48,12 +49,12 @@ Direct single-GPU launch inside an allocated GPU shell:
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0
-export ROOT=outputs/ltx23-hq-best-plus-nvfp4-1080p10s
-export OUT_DIR=$ROOT/allkwl_cache8_pisa_preproj_ropecache_te_nvfp4
+export ROOT=outputs/ltx23-hq-current-best-ca-dual-1080p10s
+export OUT_DIR=$ROOT/ca_dual_only
 export FORCE=1
 export WARMUP=true
 export WARMUP_STEPS=15
-export MASTER_PORT=30017
+export MASTER_PORT=30401
 
 export SGLANG_HQ_VARIANT=kwl_stage1_cache_core_stage2_sparse
 export SGLANG_HQ_ENABLE_TE_NVFP4_FFN=1
@@ -66,6 +67,7 @@ export SGLANG_HQ_KWL_FUSED_RMS_ADALN=1
 export SGLANG_HQ_KWL_FUSED_ADALN=1
 export SGLANG_HQ_KWL_FUSED_QKNORM_ROPE=1
 export SGLANG_HQ_KWL_FUSED_DUAL_MODULATE=1
+export SGLANG_HQ_KWL_FUSED_CA_DUAL_MODULATE=1
 export SGLANG_HQ_KWL_FUSED_ADA_VALUES_ALL=1
 export SGLANG_HQ_KWL_FUSED_RESIDUAL_GATE=1
 export SGLANG_HQ_KWL_FUSED_FFN_PROJ_IN_GELU=1
@@ -83,36 +85,12 @@ bash scripts/run_ltx23_sglang_hq_1080p10s.sh "$SGLANG_HQ_VARIANT"
 Equivalent Slurm submission:
 
 ```bash
-sbatch -A nvr_elm_llm -p batch -N 1 --gpus-per-node=1 --exclusive \
-  --cpus-per-task=16 --mem=0 -t 03:00:00 -J ltx23-hq-46s \
-  -o outputs/slurm/ltx23-hq-46s-%j.out \
-  -e outputs/slurm/ltx23-hq-46s-%j.err \
-  --wrap 'cd /lustre/fs1/portfolios/nvr/projects/nvr_elm_llm/users/yitongl/code/Sol-LTX-Infer && \
-    CUDA_VISIBLE_DEVICES=0 \
-    ROOT=outputs/ltx23-hq-best-plus-nvfp4-1080p10s \
-    OUT_DIR=outputs/ltx23-hq-best-plus-nvfp4-1080p10s/allkwl_cache8_pisa_preproj_ropecache_te_nvfp4 \
-    FORCE=1 WARMUP=true WARMUP_STEPS=15 MASTER_PORT=30017 \
-    SGLANG_HQ_VARIANT=kwl_stage1_cache_core_stage2_sparse \
-    SGLANG_HQ_ENABLE_TE_NVFP4_FFN=1 \
-    SGLANG_LTX2_STAGE1_CACHE_CORE_PRESET=8of15_last_29calls \
-    SGLANG_HQ_KWL_SHARE_BLOCK0_SELF_ATTN=1 \
-    SGLANG_HQ_KWL_SHARE_GUIDANCE_PREFIX=1 \
-    SGLANG_HQ_KWL_FUSED_QK_ROPE=1 \
-    SGLANG_HQ_KWL_FUSED_RMS_ADALN=1 \
-    SGLANG_HQ_KWL_FUSED_ADALN=1 \
-    SGLANG_HQ_KWL_FUSED_QKNORM_ROPE=1 \
-    SGLANG_HQ_KWL_FUSED_DUAL_MODULATE=1 \
-    SGLANG_HQ_KWL_FUSED_ADA_VALUES_ALL=1 \
-    SGLANG_HQ_KWL_FUSED_RESIDUAL_GATE=1 \
-    SGLANG_HQ_KWL_FUSED_FFN_PROJ_IN_GELU=1 \
-    SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT=1 \
-    SGLANG_HQ_KWL_FUSED_AUDIO_QKVG=1 \
-    SGLANG_HQ_KWL_ENABLE_FUSED_QKNORM_ROPE=1 \
-    SGLANG_HQ_KWL_COMPILE_TILED_VAE=1 \
-    SGLANG_LTX2_PREPROJECT_PROMPTS=1 \
-    SGLANG_LTX2_CACHE_ROPE_EMB=1 \
-    bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_stage1_cache_core_stage2_sparse'
+sbatch scripts/slurm_ltx23_sglang_hq_ca_dual_44s_1080p10s.sh
 ```
+
+The Slurm script requests four GPUs because this cluster QOS rejects smaller GPU allocations, but
+it runs a single visible GPU by default (`CUDA_VISIBLE_DEVICES=0`). Override `LTX23_CUDA_VISIBLE_DEVICES`,
+`ROOT`, `OUT_DIR`, or `MASTER_PORT` in the environment if needed.
 
 The runner writes the exact generate command to:
 
