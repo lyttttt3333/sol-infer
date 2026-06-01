@@ -20,6 +20,7 @@
 
 import contextlib
 import glob
+import hashlib
 import json
 import os
 import shutil
@@ -325,7 +326,10 @@ def prepare_diffusers_component_path_for_loading(component_path: str) -> str:
     if not os.path.exists(config_path):
         return local_component_path
 
-    with get_lock(config_path):
+    config_lock_key = "diffusers-component-config-" + hashlib.sha256(
+        os.path.abspath(config_path).encode("utf-8")
+    ).hexdigest()
+    with get_lock(config_lock_key):
         try:
             with open(config_path, encoding="utf-8") as f:
                 config = cast(dict[str, Any], json.load(f))
