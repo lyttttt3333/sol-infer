@@ -288,23 +288,30 @@ After restoring the accepted 45s HQ boundary, commit `66c3a010e` exposes additio
 kernel switches without changing their defaults. The baseline remains unchanged unless the new
 switches are explicitly set.
 
-Same-node comparison, warmup excluded, same prompt/seed, same stage-1 cache preset and same
-stage-2 PISA config:
+The validated kernel-only add-on for the accepted 45s HQ path is cross-attention dual modulation
+fusion only:
 
-```text
-artifact root: outputs/ltx23-hq-45aligned-kernelopts-1080p10s
-baseline_45aligned total: 46.600 s
-  stage1: 25.868 s
-  stage2: 14.983 s
-  decode: 5.479 s
-kernel_only_opts total: 45.083 s
-  stage1: 25.120 s
-  stage2: 14.388 s
-  decode: 5.345 s
-speedup vs same-run baseline: 1.034x
+```bash
+export SGLANG_HQ_KWL_FUSED_CA_DUAL_MODULATE=1
 ```
 
-The aligned invariants were verified in both `hq_semantics.json` files:
+Same-node comparison, warmup excluded, same prompt/seed, same stage-1 cache preset, same stage-2
+PISA config, and no PISA/cache hyperparameter changes:
+
+```text
+artifact root: outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s
+baseline total: 46.000 s
+  stage1: 25.395 s
+  stage2: 14.906 s
+  decode: 5.537 s
+ca_dual_only total: 44.921 s
+  stage1: 24.567 s
+  stage2: 14.244 s
+  decode: 5.937 s
+speedup vs same-node baseline: 1.024x
+```
+
+The aligned invariants were verified in each `hq_semantics.json` file:
 
 ```text
 stage1_cache_core_preset=8of15_last_29calls
@@ -315,28 +322,32 @@ piecewise_approx_remainder=true
 piecewise_route_mode=score
 ```
 
-Extra switches requested for `kernel_only_opts`:
+Ablation from the same run:
 
 ```text
-SGLANG_HQ_KWL_FUSED_CA_DUAL_MODULATE=1
-SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT_RESIDUAL=1
-SGLANG_HQ_ENABLE_TE_NVFP4_FUSED_PROJ_IN_GELU=1
-SGLANG_HQ_ENABLE_TE_NVFP4_FUSED_PROJ_OUT_BIAS_GATE=1
+ca_dual_only: 44.921 s, 1.024x
+ca_dual_gate_residual: 44.980 s, 1.023x
+ca_dual_gate_te_projout: 45.375 s, 1.014x
 ```
 
-Runtime caveat: `TE NVFP4 fused proj_in+GELU` fell back at runtime with a cuBLAS unsupported-parameter
-error, so the measured `1.034x` should not be attributed to that path. Further isolated ablation is
-needed to split the gain between CA dual modulation, gate-to-out residual compile, TE proj-out epilogue,
-and normal run-to-run variance.
+`SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT_RESIDUAL=1` and
+`SGLANG_HQ_ENABLE_TE_NVFP4_FUSED_PROJ_OUT_BIAS_GATE=1` did not improve the same-node result when
+stacked on top of CA dual. The earlier `SGLANG_HQ_ENABLE_TE_NVFP4_FUSED_PROJ_IN_GELU=1` experiment
+fell back at runtime with a cuBLAS unsupported-parameter error and should not be counted as an active
+optimization.
 
 Artifacts:
 
 ```bash
-outputs/ltx23-hq-45aligned-kernelopts-1080p10s/summary_kernel_only_opts.json
-outputs/ltx23-hq-45aligned-kernelopts-1080p10s/baseline_45aligned/out.mp4
-outputs/ltx23-hq-45aligned-kernelopts-1080p10s/kernel_only_opts/out.mp4
-outputs/ltx23-hq-45aligned-kernelopts-1080p10s/baseline-vs-kernel-only-side-by-side.mp4
+outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s/summary_kernel_samenode.json
+outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s/baseline/out.mp4
+outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s/ca_dual_only/out.mp4
+outputs/ltx23-hq-45aligned-kernel-samenode-1080p10s/baseline-vs-ca-dual-side-by-side.mp4
 ```
+
+A previous exploratory run with all four switches requested is preserved under
+`outputs/ltx23-hq-45aligned-kernelopts-1080p10s`, but it is not the recommended launch because the
+TE `proj_in+GELU` path fell back.
 
 ## Useful Comparison Artifacts
 
