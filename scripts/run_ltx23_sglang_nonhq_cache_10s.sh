@@ -7,9 +7,9 @@ cd "$REPO_ROOT"
 
 VARIANT="${SGLANG_NONHQ_VARIANT:-${1:-dense}}"
 case "$VARIANT" in
-  dense|kwl|cache_pab_late12_w3|cache_teacache_c04_s6|cache_dbcache_aggressive|kwl_cache_teacache_c04_s6|kwl_cache_teacache_c04_s6_sparse_piecewise|kwl_cache_teacache_c04_s6_stage2_sparse_piecewise) ;;
+  dense|kwl|cache_pab_late12_w3|cache_teacache_c04_s6|cache_teacache_c06_s5|cache_teacache_c08_s5|cache_dbcache_aggressive|kwl_cache_teacache_c04_s6|kwl_cache_teacache_c06_s5|kwl_cache_teacache_c08_s5|kwl_cache_teacache_c04_s6_sparse_piecewise|kwl_cache_teacache_c04_s6_stage2_sparse_piecewise) ;;
   *)
-    echo "Usage: SGLANG_NONHQ_VARIANT=dense|kwl|cache_pab_late12_w3|cache_teacache_c04_s6|cache_dbcache_aggressive|kwl_cache_teacache_c04_s6|kwl_cache_teacache_c04_s6_sparse_piecewise|kwl_cache_teacache_c04_s6_stage2_sparse_piecewise $0 [variant]" >&2
+    echo "Usage: SGLANG_NONHQ_VARIANT=dense|kwl|cache_pab_late12_w3|cache_teacache_c04_s6|cache_teacache_c06_s5|cache_teacache_c08_s5|cache_dbcache_aggressive|kwl_cache_teacache_c04_s6|kwl_cache_teacache_c06_s5|kwl_cache_teacache_c08_s5|kwl_cache_teacache_c04_s6_sparse_piecewise|kwl_cache_teacache_c04_s6_stage2_sparse_piecewise $0 [variant]" >&2
     exit 2
     ;;
 esac
@@ -68,6 +68,7 @@ clear_cache_env() {
   unset SGLANG_CACHE_DIT_WARMUP SGLANG_CACHE_DIT_RDT SGLANG_CACHE_DIT_MC SGLANG_CACHE_DIT_FN SGLANG_CACHE_DIT_BN
   unset SGLANG_LTX2_TEACACHE_THRESH SGLANG_LTX2_TEACACHE_START SGLANG_LTX2_TEACACHE_END
   unset SGLANG_LTX2_TEACACHE_STAGE2_DISABLE SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS
+  unset SGLANG_LTX2_TEACACHE_STAGE1_ENABLED SGLANG_LTX2_TEACACHE_PERIODIC_RECOMPUTE_STEPS
 }
 
 clear_sparse_env() {
@@ -144,14 +145,31 @@ enable_cache_env() {
       export SGLANG_LTX2_PAB_V2A_WINDOW=1
       export SGLANG_LTX2_PAB_STAGE2_ENABLED=0
       ;;
-    cache_teacache_c04_s6|kwl_cache_teacache_c04_s6|kwl_cache_teacache_c04_s6_sparse_piecewise|kwl_cache_teacache_c04_s6_stage2_sparse_piecewise)
-      CACHE_ALGO="teacache_c04_s6"
+    cache_teacache_c04_s6|cache_teacache_c06_s5|cache_teacache_c08_s5|kwl_cache_teacache_c04_s6|kwl_cache_teacache_c06_s5|kwl_cache_teacache_c08_s5|kwl_cache_teacache_c04_s6_sparse_piecewise|kwl_cache_teacache_c04_s6_stage2_sparse_piecewise)
+      CACHE_ALGO="teacache"
       export SGLANG_LTX2_TEACACHE_ENABLED=1
-      export SGLANG_LTX2_TEACACHE_THRESH=0.04
-      export SGLANG_LTX2_TEACACHE_START=6
-      export SGLANG_LTX2_TEACACHE_END=-1
-      export SGLANG_LTX2_TEACACHE_STAGE2_DISABLE=1
+      export SGLANG_LTX2_TEACACHE_STAGE1_ENABLED="${SGLANG_LTX2_TEACACHE_STAGE1_ENABLED:-1}"
+      export SGLANG_LTX2_TEACACHE_END="${SGLANG_LTX2_TEACACHE_END:--1}"
+      export SGLANG_LTX2_TEACACHE_STAGE2_DISABLE="${SGLANG_LTX2_TEACACHE_STAGE2_DISABLE:-1}"
       export SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS="${SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS:-1}"
+      export SGLANG_LTX2_TEACACHE_PERIODIC_RECOMPUTE_STEPS="${SGLANG_LTX2_TEACACHE_PERIODIC_RECOMPUTE_STEPS:-0}"
+      case "$VARIANT" in
+        cache_teacache_c04_s6|kwl_cache_teacache_c04_s6|kwl_cache_teacache_c04_s6_sparse_piecewise|kwl_cache_teacache_c04_s6_stage2_sparse_piecewise)
+          CACHE_ALGO="teacache_c04_s6"
+          export SGLANG_LTX2_TEACACHE_THRESH="${SGLANG_LTX2_TEACACHE_THRESH:-0.04}"
+          export SGLANG_LTX2_TEACACHE_START="${SGLANG_LTX2_TEACACHE_START:-6}"
+          ;;
+        cache_teacache_c06_s5|kwl_cache_teacache_c06_s5)
+          CACHE_ALGO="teacache_c06_s5"
+          export SGLANG_LTX2_TEACACHE_THRESH="${SGLANG_LTX2_TEACACHE_THRESH:-0.06}"
+          export SGLANG_LTX2_TEACACHE_START="${SGLANG_LTX2_TEACACHE_START:-5}"
+          ;;
+        cache_teacache_c08_s5|kwl_cache_teacache_c08_s5)
+          CACHE_ALGO="teacache_c08_s5"
+          export SGLANG_LTX2_TEACACHE_THRESH="${SGLANG_LTX2_TEACACHE_THRESH:-0.08}"
+          export SGLANG_LTX2_TEACACHE_START="${SGLANG_LTX2_TEACACHE_START:-5}"
+          ;;
+      esac
       ;;
     cache_dbcache_aggressive)
       CACHE_ALGO="dbcache_aggressive"
@@ -295,6 +313,10 @@ summary = {
     "pab_window": int(os.environ.get("SGLANG_LTX2_PAB_SPATIAL_WINDOW", "0") or 0),
     "teacache_thresh": float(os.environ.get("SGLANG_LTX2_TEACACHE_THRESH", "0") or 0),
     "teacache_start": int(os.environ.get("SGLANG_LTX2_TEACACHE_START", "-1") or -1),
+    "teacache_end": os.environ.get("SGLANG_LTX2_TEACACHE_END", ""),
+    "teacache_stage1_enabled": os.environ.get("SGLANG_LTX2_TEACACHE_STAGE1_ENABLED", "0").lower() in {"1", "true", "yes", "on"},
+    "teacache_stage2_enabled": os.environ.get("SGLANG_LTX2_TEACACHE_STAGE2_DISABLE", "1").lower() not in {"1", "true", "yes", "on"},
+    "teacache_max_continuous_hits": int(os.environ.get("SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS", "-1") or -1),
     "dbcache_warmup": int(os.environ.get("SGLANG_CACHE_DIT_WARMUP", "0") or 0),
     "dbcache_rdt": float(os.environ.get("SGLANG_CACHE_DIT_RDT", "0") or 0),
     "dbcache_mc": int(os.environ.get("SGLANG_CACHE_DIT_MC", "0") or 0),

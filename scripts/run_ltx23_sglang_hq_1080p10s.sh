@@ -7,9 +7,9 @@ cd "$REPO_ROOT"
 
 VARIANT="${SGLANG_HQ_VARIANT:-${1:-dense}}"
 case "$VARIANT" in
-  dense|kwl|kwl_experimental|kwl_sparse|kwl_stage2_sparse|kwl_cache|kwl_sparse_cache|kwl_stage1_cache_core|kwl_stage1_cache_core_stage2_sparse) ;;
+  dense|kwl|kwl_experimental|kwl_sparse|kwl_stage2_sparse|kwl_cache|kwl_sparse_cache|kwl_teacache_c04_s6|kwl_teacache_c06_s5|kwl_teacache_c08_s5|kwl_stage1_cache_core|kwl_stage1_cache_core_stage2_sparse) ;;
   *)
-    echo "Usage: SGLANG_HQ_VARIANT=dense|kwl|kwl_experimental|kwl_sparse|kwl_stage2_sparse|kwl_cache|kwl_sparse_cache|kwl_stage1_cache_core|kwl_stage1_cache_core_stage2_sparse $0 [variant]" >&2
+    echo "Usage: SGLANG_HQ_VARIANT=dense|kwl|kwl_experimental|kwl_sparse|kwl_stage2_sparse|kwl_cache|kwl_sparse_cache|kwl_teacache_c04_s6|kwl_teacache_c06_s5|kwl_teacache_c08_s5|kwl_stage1_cache_core|kwl_stage1_cache_core_stage2_sparse $0 [variant]" >&2
     exit 2
     ;;
 esac
@@ -53,6 +53,7 @@ OUT_VIDEO="$OUT_DIR/out.mp4"
 PERF_JSON="$OUT_DIR/perf.json"
 PROMPT="${PROMPT:-A cinematic 10 second aerial shot of an antique brass clockwork train crossing a snowy mountain bridge at sunrise, steam drifting through golden light, smooth camera movement, high detail}"
 NEGATIVE_PROMPT="${NEGATIVE_PROMPT:-blurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, wrong hand count, artifacts around text, inconsistent perspective, camera shake, incorrect depth of field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, wrong gaze direction, mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, off-sync audio, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, flat lighting, inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts.}"
+PROMPT_INDEX="${PROMPT_INDEX:-0}"
 FORCE="${FORCE:-0}"
 WARMUP="${WARMUP:-false}"
 WARMUP_STEPS="${WARMUP_STEPS:-1}"
@@ -86,6 +87,14 @@ clear_lossy_env() {
   export SGLANG_LTX2_PAB_ENABLED=0
   export SGLANG_LTX2_STAGE1_CACHE_CORE_ENABLED=0
   export SGLANG_CACHE_DIT_ENABLED=0
+  export SGLANG_LTX2_TEACACHE_ENABLED=0
+  unset SGLANG_LTX2_TEACACHE_THRESH
+  unset SGLANG_LTX2_TEACACHE_START
+  unset SGLANG_LTX2_TEACACHE_END
+  unset SGLANG_LTX2_TEACACHE_STAGE1_ENABLED
+  unset SGLANG_LTX2_TEACACHE_STAGE2_DISABLE
+  unset SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS
+  unset SGLANG_LTX2_TEACACHE_PERIODIC_RECOMPUTE_STEPS
   export SGLANG_LTX2_FP4_FUSED_PROJ_IN_BIAS_GELU=0
   export SGLANG_LTX2_FP4_FUSED_PROJ_OUT_BIAS_GATE=0
   export SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE=0
@@ -221,6 +230,30 @@ enable_stage1_cache_core_env() {
   export SGLANG_LTX2_STAGE1_CACHE_CORE_CACHE_DEVICE="${SGLANG_LTX2_STAGE1_CACHE_CORE_CACHE_DEVICE:-default}"
 }
 
+enable_teacache_env() {
+  CACHE_ALGO="teacache"
+  export SGLANG_LTX2_TEACACHE_ENABLED=1
+  export SGLANG_LTX2_TEACACHE_STAGE1_ENABLED="${SGLANG_LTX2_TEACACHE_STAGE1_ENABLED:-1}"
+  export SGLANG_LTX2_TEACACHE_STAGE2_DISABLE="${SGLANG_LTX2_TEACACHE_STAGE2_DISABLE:-1}"
+  export SGLANG_LTX2_TEACACHE_END="${SGLANG_LTX2_TEACACHE_END:--1}"
+  export SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS="${SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS:-1}"
+  export SGLANG_LTX2_TEACACHE_PERIODIC_RECOMPUTE_STEPS="${SGLANG_LTX2_TEACACHE_PERIODIC_RECOMPUTE_STEPS:-0}"
+  case "$VARIANT" in
+    kwl_teacache_c04_s6)
+      export SGLANG_LTX2_TEACACHE_THRESH="${SGLANG_LTX2_TEACACHE_THRESH:-0.04}"
+      export SGLANG_LTX2_TEACACHE_START="${SGLANG_LTX2_TEACACHE_START:-6}"
+      ;;
+    kwl_teacache_c06_s5)
+      export SGLANG_LTX2_TEACACHE_THRESH="${SGLANG_LTX2_TEACACHE_THRESH:-0.06}"
+      export SGLANG_LTX2_TEACACHE_START="${SGLANG_LTX2_TEACACHE_START:-5}"
+      ;;
+    kwl_teacache_c08_s5)
+      export SGLANG_LTX2_TEACACHE_THRESH="${SGLANG_LTX2_TEACACHE_THRESH:-0.08}"
+      export SGLANG_LTX2_TEACACHE_START="${SGLANG_LTX2_TEACACHE_START:-5}"
+      ;;
+  esac
+}
+
 
 enable_cache_env() {
   CACHE_ALGO="${SGLANG_HQ_CACHE_ALGO:-pab}"
@@ -281,6 +314,9 @@ fi
 if [[ "$VARIANT" == "kwl_stage1_cache_core" || "$VARIANT" == "kwl_stage1_cache_core_stage2_sparse" ]]; then
   enable_stage1_cache_core_env
 fi
+if [[ "$VARIANT" == kwl_teacache_* ]]; then
+  enable_teacache_env
+fi
 if [[ "${SGLANG_HQ_ENABLE_TE_NVFP4_FFN:-0}" == "1" ]]; then
   enable_te_nvfp4_video_ffn_env
 fi
@@ -335,6 +371,8 @@ from pathlib import Path
 out_dir = Path(sys.argv[1])
 summary = {
     "variant": f"sglang_hq_{sys.argv[2]}",
+    "prompt_index": int(__import__("os").environ.get("PROMPT_INDEX", "0") or 0),
+    "prompt": __import__("os").environ.get("PROMPT", ""),
     "pipeline_class_name": "LTX2TwoStageHQPipeline",
     "model_path": sys.argv[3],
     "distilled_lora": sys.argv[4],
@@ -371,6 +409,13 @@ summary = {
     "stage1_cache_core_preset": __import__("os").environ.get("SGLANG_LTX2_STAGE1_CACHE_CORE_PRESET", ""),
     "stage1_cache_core_expected_calls": __import__("os").environ.get("SGLANG_LTX2_STAGE1_CACHE_CORE_EXPECTED_CALLS", ""),
     "stage1_cache_core_skip_indices": __import__("os").environ.get("SGLANG_LTX2_STAGE1_CACHE_CORE_SKIP_INDICES", ""),
+    "teacache_enabled": __import__("os").environ.get("SGLANG_LTX2_TEACACHE_ENABLED", "0") in ("1", "true", "yes", "on"),
+    "teacache_thresh": float(__import__("os").environ.get("SGLANG_LTX2_TEACACHE_THRESH", "0") or 0),
+    "teacache_start": int(__import__("os").environ.get("SGLANG_LTX2_TEACACHE_START", "-1") or -1),
+    "teacache_end": __import__("os").environ.get("SGLANG_LTX2_TEACACHE_END", ""),
+    "teacache_stage1_enabled": __import__("os").environ.get("SGLANG_LTX2_TEACACHE_STAGE1_ENABLED", "0") in ("1", "true", "yes", "on"),
+    "teacache_stage2_enabled": __import__("os").environ.get("SGLANG_LTX2_TEACACHE_STAGE2_DISABLE", "1") not in ("1", "true", "yes", "on"),
+    "teacache_max_continuous_hits": int(__import__("os").environ.get("SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS", "-1") or -1),
     "share_block0_self_attn": __import__("os").environ.get("SGLANG_LTX2_SHARE_BLOCK0_SELF_ATTN", "0") in ("1", "true", "yes", "on"),
     "share_guidance_prefix": __import__("os").environ.get("SGLANG_LTX2_SHARE_GUIDANCE_PREFIX", "0") in ("1", "true", "yes", "on"),
     "kwl_flags": {

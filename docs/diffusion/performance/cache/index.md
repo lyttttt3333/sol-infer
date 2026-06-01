@@ -46,6 +46,7 @@ See [teacache.md](teacache.md) for detailed documentation.
 
 ### Supported Models
 
+- LTX-2.3
 - Wan (wan2.1, wan2.2)
 - Hunyuan (HunyuanVideo)
 - Z-Image
