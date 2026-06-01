@@ -376,6 +376,18 @@ attention and FFN, plus backend-kernel work for the existing `sparsity=0.9, bloc
 route_mode=score` stage-2 PISA attention. Text encoding and connector stages are already small in
 the validated run (`84 ms` and `34 ms`) and are not the next useful optimization target.
 
+A same-node route-compile ablation tested `SGLANG_PIECEWISE_ATTN_COMPILE_ROUTE=1` without
+changing PISA/cache semantics:
+
+```text
+artifact: outputs/ltx23-hq-ca-dual-routecompile-samenode-1080p10s
+baseline: 45.034 s
+route_compile: 45.011 s
+speedup: 1.0005x
+```
+
+That is noise-level only, so route compile is not part of the recommended recipe.
+
 ## Useful Comparison Artifacts
 
 ```bash
