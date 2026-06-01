@@ -118,80 +118,40 @@ export SGLANG_DIFFUSION_DECODE_PROFILE=1
 ```
 
 
-### LTX 2.3 Non-HQ Current Fastest 1080p10s Path
+### LTX 2.3 45s HQ Quality-Aligned Baseline
 
-The current fastest non-HQ 1080p 10s path on `ltx2-dit-fusion-report` is the
-single-GPU SGLang `LTX2TwoStagePipeline` runner below. It keeps the same prompt,
-seed, 30 stage-1 inference steps, 3 stage-2 refinement steps, resident two-stage
-DiTs, and 1088x1920 output shape used by the previous non-HQ tests.
-
-Measured artifact:
-
-```bash
-outputs/ltx23-best-nonhq-35s-1080p10s/sgl_kernel_localpath/summary.json
-outputs/ltx23-best-nonhq-35s-1080p10s/sgl_kernel_localpath/out.mp4
-```
-
-Measured runtime, warmup excluded:
+The accepted optimization target for this branch is the HQ 1080p 10s recipe in
+`README_LTX23_46S_HQ.md`. That path keeps the HQ two-stage pipeline and uses:
 
 ```text
-total: 35.456 s
-stage 1 denoise: 29.345 s
-stage 2 refinement: 3.094 s
-DiT total: 32.440 s
-VAE decode: 2.853 s
-speedup vs 59.332s lossless KWL record: 1.673x
+stage-1 cache preset: 8of15_last_29calls
+stage-2 PISA sparsity: 0.9
+stage-2 PISA block size: 64
+stage-2 PISA approx_remainder: true
+stage-2 PISA route_mode: score
+selective FP4: TE NVFP4 video FFN only
+measured total: 45.871 s
 ```
 
-Ablation against the same FP4 + piecewise attention path without the new CA/shared-Q
-additions:
+Changing the PISA/cache algorithm parameters is not a valid speedup for this baseline.
+In particular, the earlier non-HQ diagnostic with:
 
 ```text
-no CA dual/shared-Q control: 38.672 s
-+ fused CA dual modulation: 35.676 s
-+ FP4 shared QKV and Q-gate activation quant: 35.374 s best observed, 35.456 s default-script reproduction
-```
-
-The new additions are:
-
-- `SGLANG_LTX2_FUSED_CA_DUAL_MODULATE=1`: fuses the cross-attention AdaLN RMSNorm
-  and table scale/shift modulation path.
-- `SGLANG_LTX2_FP4_SHARED_QKV=1`: reuses one FP4 activation quantization for Q/K/V
-  projections when the ModelOpt FP4 input scales match exactly.
-- `SGLANG_LTX2_FP4_SHARED_Q_GATE=1`: reuses one FP4 activation quantization for
-  Q and gate projection when scales match exactly.
-
-The full path is not algorithmically lossless against dense BF16 because it includes
-selective NVFP4 linears and piecewise sparse video self-attention. The CA dual fusion
-is algorithmically equivalent. The shared-Q FP4 paths do not add a new approximation
-beyond the existing FP4 projection path; they only remove duplicate activation
-quantization when the scale invariants match.
-
-Default launch:
-
-```bash
-sbatch scripts/slurm_ltx23_best_nvfp4_piecewise_1080p10s.sh
-```
-
-The default runner now uses:
-
-```bash
-SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND=sgl_kernel
-SGLANG_DIFFUSION_FP4_QUANTIZE_BACKEND=flashinfer
 SGLANG_PIECEWISE_ATTN_SPARSITY=0.999
 SGLANG_PIECEWISE_ATTN_BLOCK_SIZE=32
 SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER=false
 SGLANG_PIECEWISE_ATTN_ROUTE_MODE=local
-SGLANG_LTX2_FUSED_CA_DUAL_MODULATE=1
-SGLANG_LTX2_FP4_SHARED_QKV=1
-SGLANG_LTX2_FP4_SHARED_Q_GATE=1
 ```
 
-Side-by-side visual check for the CA dual change:
+is an aggressive sparse-attention experiment only, not a quality-aligned result.
 
-```bash
-outputs/ltx23-cadual-e2e-1080p10s/no-ca-vs-ca-dual-side-by-side.mp4
-```
+Kernel/runtime optimizations that can be evaluated without changing the accepted
+cache/PISA semantics include:
+
+- TE NVFP4 FFN epilogues: `proj_in + GELU` and `proj_out + bias + residual + gate`.
+- ModelOpt/CUTLASS FP4 GEMM epilogues: `bias + GELU` and `bias + residual + gate`.
+- Cross-attention dual modulation fusion.
+- Compile/cache path fixes under `outputs/.cache`.
 
 
 ### LTX 2.3 HQ KWL + Sparse Attention + PAB Cache

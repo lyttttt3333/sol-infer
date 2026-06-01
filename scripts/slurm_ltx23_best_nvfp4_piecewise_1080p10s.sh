@@ -53,15 +53,15 @@ export SGLANG_LTX2_FP4_FUSED_PROJ_OUT_BIAS_GATE="${SGLANG_LTX2_FP4_FUSED_PROJ_OU
 export SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE="${SGLANG_LTX2_FP4_FUSED_ATTN_TO_OUT_BIAS_GATE:-1}"
 export SGLANG_LTX2_FP4_SHARED_QKV="${SGLANG_LTX2_FP4_SHARED_QKV:-1}"
 export SGLANG_LTX2_FP4_SHARED_Q_GATE="${SGLANG_LTX2_FP4_SHARED_Q_GATE:-1}"
-export SGLANG_PIECEWISE_ATTN_SPARSITY="${SGLANG_PIECEWISE_ATTN_SPARSITY:-0.999}"
-export SGLANG_PIECEWISE_ATTN_BLOCK_SIZE="${SGLANG_PIECEWISE_ATTN_BLOCK_SIZE:-32}"
+export SGLANG_PIECEWISE_ATTN_SPARSITY="${SGLANG_PIECEWISE_ATTN_SPARSITY:-0.9}"
+export SGLANG_PIECEWISE_ATTN_BLOCK_SIZE="${SGLANG_PIECEWISE_ATTN_BLOCK_SIZE:-64}"
 export SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF="${SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF:-true}"
-export SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER="${SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER:-false}"
-export SGLANG_PIECEWISE_ATTN_ROUTE_MODE="${SGLANG_PIECEWISE_ATTN_ROUTE_MODE:-local}"
+export SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER="${SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER:-true}"
+export SGLANG_PIECEWISE_ATTN_ROUTE_MODE="${SGLANG_PIECEWISE_ATTN_ROUTE_MODE:-score}"
 
 export MODEL_PATH="${MODEL_PATH:-outputs/.cache/sgl_diffusion/materialized_models/Lightricks__LTX-2.3-c24cea94ab17c493}"
 export PROMPT="${PROMPT:-A cinematic aerial shot of clouds moving across a mountain ridge at sunrise}"
-export OUT_DIR="${OUT_DIR:-outputs/ltx23-best-nonhq-35s-1080p10s/sgl_kernel_localpath}"
+export OUT_DIR="${OUT_DIR:-outputs/ltx23-nonhq-quality-aligned-nvfp4-piecewise-1080p10s/sgl_kernel_localpath}"
 mkdir -p outputs/slurm "$OUT_DIR"
 
 if [[ "${SGLANG_DIFFUSION_LTX2_EVENT_PROFILE:-0}" == "1" ]]; then
@@ -72,7 +72,7 @@ fi
 
 .conda/ltx23/bin/python - <<'PY2'
 import json, os
-out_dir = os.environ.get('OUT_DIR', 'outputs/ltx23-best-nonhq-35s-1080p10s/sgl_kernel_localpath')
+out_dir = os.environ.get('OUT_DIR', 'outputs/ltx23-nonhq-quality-aligned-nvfp4-piecewise-1080p10s/sgl_kernel_localpath')
 path = os.path.join(out_dir, 'perf.json')
 d = json.load(open(path))
 steps = {x['name']: x['duration_ms'] for x in d.get('steps', [])}
