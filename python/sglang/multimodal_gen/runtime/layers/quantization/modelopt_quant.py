@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
@@ -47,6 +48,10 @@ else:
     flashinfer = None
 
 
+def _modelopt_fp4_batched_residual_gate_enabled() -> bool:
+    return os.environ.get("SGLANG_LTX2_FP4_FUSED_BATCHED_RESIDUAL_GATE", "0") == "1"
+
+
 @lru_cache(maxsize=1)
 def _get_fp4_quantize_op():
     return current_platform.get_modelopt_fp4_quantize_op()
@@ -55,6 +60,38 @@ def _get_fp4_quantize_op():
 @lru_cache(maxsize=1)
 def _get_fp4_gemm_op():
     return current_platform.get_modelopt_fp4_gemm_op()
+
+
+@lru_cache(maxsize=1)
+def _get_fp4_bias_gelu_gemm_op():
+    try:
+        from sglang.jit_kernel.nvfp4 import cutlass_scaled_fp4_mm_bias_gelu
+
+        return cutlass_scaled_fp4_mm_bias_gelu
+    except ImportError:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _get_fp4_per_col_residual_gate_gemm_op():
+    try:
+        from sglang.jit_kernel.nvfp4 import cutlass_scaled_fp4_mm_per_col_residual_gate
+
+        return cutlass_scaled_fp4_mm_per_col_residual_gate
+    except ImportError:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _get_fp4_batched_per_col_residual_gate_gemm_op():
+    try:
+        from sglang.jit_kernel.nvfp4 import (
+            cutlass_scaled_fp4_mm_batched_per_col_residual_gate,
+        )
+
+        return cutlass_scaled_fp4_mm_batched_per_col_residual_gate
+    except ImportError:
+        return None
 
 
 def _prepare_nvfp4_weight_bytes(
@@ -503,6 +540,377 @@ def modelopt_fp4_apply_quantized_linear(
     if bias is not None:
         out.add_(bias)
     return out.view(*output_shape)
+
+
+def modelopt_fp4_apply_quantized_linear_bias_gelu(
+    layer: torch.nn.Module,
+    x_fp4: torch.Tensor,
+    x_scale_interleaved: torch.Tensor,
+    input_shape: tuple[int, ...],
+    output_dtype: torch.dtype,
+    bias: torch.Tensor,
+) -> torch.Tensor | None:
+    """Apply CUTLASS NVFP4 GEMM with bias+GELU in the GEMM epilogue."""
+    fp4_gemm, flashinfer_backend = _get_fp4_gemm_op()
+    if fp4_gemm is None or flashinfer_backend is not None:
+        return None
+    fused_gemm = _get_fp4_bias_gelu_gemm_op()
+    if fused_gemm is None:
+        return None
+
+    output_size = layer.output_size_per_partition
+    output_shape = list(input_shape[:-1]) + [output_size]
+    weights_padding_cols = getattr(layer, "weights_padding_cols", 0)
+    x_fp4 = pad_nvfp4_activation_for_cutlass(x_fp4, weights_padding_cols)
+
+    w = layer.weight
+    w_scale_interleaved = layer.weight_scale_interleaved
+    if x_scale_interleaved.dtype == torch.uint8:
+        x_scale_interleaved = x_scale_interleaved.view(torch.float8_e4m3fn)
+    if w_scale_interleaved.dtype == torch.uint8:
+        w_scale_interleaved = w_scale_interleaved.view(torch.float8_e4m3fn)
+
+    if bias.shape[0] != w.shape[0]:
+        if bias.shape[0] > w.shape[0]:
+            return None
+        padded_bias = torch.zeros((w.shape[0],), dtype=bias.dtype, device=bias.device)
+        padded_bias[: bias.shape[0]].copy_(bias)
+        bias = padded_bias
+
+    out = fused_gemm(
+        x_fp4,
+        w,
+        x_scale_interleaved,
+        w_scale_interleaved,
+        layer.alpha,
+        bias,
+        output_dtype,
+    )
+    out = slice_nvfp4_output(out, output_size)
+    return out.view(*output_shape)
+
+
+def modelopt_fp4_apply_linear_bias_gelu(
+    layer: torch.nn.Module, x: torch.Tensor, bias: torch.Tensor
+) -> torch.Tensor | None:
+    x_fp4, x_scale_interleaved, input_shape, output_dtype = modelopt_fp4_quantize_activation(
+        x, layer.input_scale_inv
+    )
+    return modelopt_fp4_apply_quantized_linear_bias_gelu(
+        layer, x_fp4, x_scale_interleaved, input_shape, output_dtype, bias
+    )
+
+
+def _modelopt_fp4_get_per_col_gate(
+    gate: torch.Tensor,
+    output_size: int,
+    output_dtype: torch.dtype,
+) -> torch.Tensor | None:
+    if gate.dtype != output_dtype or gate.shape[-1] != output_size:
+        return None
+    if gate.ndim == 1:
+        return gate.contiguous()
+    if all(int(dim) == 1 for dim in gate.shape[:-1]):
+        return gate.reshape(output_size).contiguous()
+    return None
+
+
+def _modelopt_fp4_get_batched_per_col_gate(
+    gate: torch.Tensor,
+    batch_size: int,
+    output_size: int,
+    output_dtype: torch.dtype,
+) -> torch.Tensor | None:
+    if gate.dtype != output_dtype or gate.shape[-1] != output_size:
+        return None
+    if gate.ndim < 2 or int(gate.shape[0]) != int(batch_size):
+        return None
+    if any(int(dim) != 1 for dim in gate.shape[1:-1]):
+        return None
+    return gate.reshape(batch_size, output_size).contiguous()
+
+
+def _modelopt_fp4_accept_batched_activation_scales(
+    x_scale_interleaved: torch.Tensor,
+    batch_size: int,
+    m_per_batch: int,
+) -> torch.Tensor | None:
+    # NVFP4 scale tensors are swizzled for the GEMM problem shape. A flat
+    # [B*M, K] quantization cannot be safely row-copied into [B, M, K]
+    # layout when M needs per-batch padding; use per-batch quantization instead.
+    rounded_m = round_up(m_per_batch, 128)
+    expected_rows = batch_size * rounded_m
+    if int(x_scale_interleaved.shape[0]) == expected_rows:
+        return x_scale_interleaved
+    return None
+
+
+def _modelopt_fp4_get_batched_weight_scales(
+    layer: torch.nn.Module,
+    w_scale_interleaved: torch.Tensor,
+    batch_size: int,
+) -> torch.Tensor:
+    cache_key = (
+        int(batch_size),
+        int(w_scale_interleaved.data_ptr()),
+        tuple(int(dim) for dim in w_scale_interleaved.shape),
+        w_scale_interleaved.dtype,
+        str(w_scale_interleaved.device),
+    )
+    cache = getattr(layer, "_sglang_fp4_batched_weight_scale_cache", None)
+    if cache is not None and cache[0] == cache_key:
+        return cache[1]
+    batched = w_scale_interleaved.repeat((batch_size, 1)).contiguous()
+    setattr(layer, "_sglang_fp4_batched_weight_scale_cache", (cache_key, batched))
+    return batched
+
+
+def modelopt_fp4_apply_quantized_linear_batched_per_col_residual_gate(
+    layer: torch.nn.Module,
+    x_fp4: torch.Tensor,
+    x_scale_interleaved: torch.Tensor,
+    input_shape: tuple[int, ...],
+    output_dtype: torch.dtype,
+    residual: torch.Tensor,
+    gate: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor | None:
+    if not _modelopt_fp4_batched_residual_gate_enabled():
+        return None
+    fp4_gemm, flashinfer_backend = _get_fp4_gemm_op()
+    if fp4_gemm is None or flashinfer_backend is not None:
+        return None
+    fused_gemm = _get_fp4_batched_per_col_residual_gate_gemm_op()
+    if fused_gemm is None or len(input_shape) < 3:
+        return None
+
+    batch_size = int(input_shape[0])
+    if batch_size <= 1:
+        return None
+    m_per_batch = 1
+    for dim in input_shape[1:-1]:
+        m_per_batch *= int(dim)
+    if m_per_batch <= 0 or int(x_fp4.shape[0]) != batch_size * m_per_batch:
+        return None
+
+    output_size = layer.output_size_per_partition
+    output_shape = list(input_shape[:-1]) + [output_size]
+    if list(residual.shape) != output_shape or residual.dtype != output_dtype:
+        return None
+    if bias.dtype != output_dtype or bias.ndim != 1 or bias.shape[0] != output_size:
+        return None
+
+    gate_2d = _modelopt_fp4_get_batched_per_col_gate(
+        gate, batch_size, output_size, output_dtype
+    )
+    if gate_2d is None:
+        return None
+
+    weights_padding_cols = getattr(layer, "weights_padding_cols", 0)
+    x_fp4 = pad_nvfp4_activation_for_cutlass(x_fp4, weights_padding_cols)
+
+    w = layer.weight
+    w_scale_interleaved = layer.weight_scale_interleaved
+    if int(w.shape[0]) != int(output_size):
+        return None
+    if x_scale_interleaved.dtype == torch.uint8:
+        x_scale_interleaved = x_scale_interleaved.view(torch.float8_e4m3fn)
+    if w_scale_interleaved.dtype == torch.uint8:
+        w_scale_interleaved = w_scale_interleaved.view(torch.float8_e4m3fn)
+
+    x_scale_batched = _modelopt_fp4_accept_batched_activation_scales(
+        x_scale_interleaved, batch_size, m_per_batch
+    )
+    if x_scale_batched is None:
+        return None
+    w_scale_batched = _modelopt_fp4_get_batched_weight_scales(
+        layer, w_scale_interleaved, batch_size
+    )
+
+    residual_2d = residual.reshape(batch_size * m_per_batch, output_size)
+    if not residual_2d.is_contiguous():
+        residual_2d = residual_2d.contiguous()
+
+    alpha = layer.alpha
+    if alpha.numel() != 1:
+        return None
+    gate_alpha = (gate_2d.float() * alpha.float().reshape(())).to(output_dtype).contiguous()
+    bias_gate = (bias.float().reshape(1, output_size) * gate_2d.float()).to(
+        output_dtype
+    ).contiguous()
+
+    out = fused_gemm(
+        x_fp4,
+        w,
+        x_scale_batched,
+        w_scale_batched,
+        alpha,
+        residual_2d,
+        gate_alpha,
+        bias_gate,
+        output_dtype,
+        batch_size,
+        m_per_batch,
+    )
+    out = slice_nvfp4_output(out, output_size)
+    return out.view(*output_shape)
+
+
+def modelopt_fp4_apply_linear_batched_per_col_residual_gate(
+    layer: torch.nn.Module,
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    gate: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor | None:
+    if not _modelopt_fp4_batched_residual_gate_enabled():
+        return None
+    input_shape = tuple(x.shape)
+    if len(input_shape) < 3:
+        return None
+    batch_size = int(input_shape[0])
+    if batch_size <= 1:
+        return None
+    m_per_batch = 1
+    for dim in input_shape[1:-1]:
+        m_per_batch *= int(dim)
+    if m_per_batch <= 0:
+        return None
+
+    output_dtype = x.dtype
+    x_3d = x.reshape(batch_size, m_per_batch, input_shape[-1])
+    x_fp4_parts = []
+    x_scale_parts = []
+    try:
+        for batch_idx in range(batch_size):
+            x_fp4_part, x_scale_part, _, _ = modelopt_fp4_quantize_activation(
+                x_3d[batch_idx], layer.input_scale_inv
+            )
+            x_fp4_parts.append(x_fp4_part)
+            x_scale_parts.append(x_scale_part)
+    except RuntimeError:
+        return None
+
+    x_fp4 = torch.cat(x_fp4_parts, dim=0).contiguous()
+    x_scale_interleaved = torch.cat(x_scale_parts, dim=0).contiguous()
+    return modelopt_fp4_apply_quantized_linear_batched_per_col_residual_gate(
+        layer,
+        x_fp4,
+        x_scale_interleaved,
+        input_shape,
+        output_dtype,
+        residual,
+        gate,
+        bias,
+    )
+
+
+def modelopt_fp4_apply_quantized_linear_per_col_residual_gate(
+    layer: torch.nn.Module,
+    x_fp4: torch.Tensor,
+    x_scale_interleaved: torch.Tensor,
+    input_shape: tuple[int, ...],
+    output_dtype: torch.dtype,
+    residual: torch.Tensor,
+    gate: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor | None:
+    """Apply CUTLASS NVFP4 GEMM with per-column gate/residual in the epilogue.
+
+    This covers the LTX2 stage-2 case where batch is one and the Ada gate is a
+    single channel vector shared by all video tokens. Stage-1 has batch-specific
+    gates and should fall back to the standalone epilogue kernel.
+    """
+    fp4_gemm, flashinfer_backend = _get_fp4_gemm_op()
+    if fp4_gemm is None or flashinfer_backend is not None:
+        return None
+    fused_gemm = _get_fp4_per_col_residual_gate_gemm_op()
+    if fused_gemm is None:
+        return None
+
+    output_size = layer.output_size_per_partition
+    output_shape = list(input_shape[:-1]) + [output_size]
+    if list(residual.shape) != output_shape or residual.dtype != output_dtype:
+        return None
+    if bias.dtype != output_dtype or bias.ndim != 1 or bias.shape[0] != output_size:
+        return None
+
+    gate_col = _modelopt_fp4_get_per_col_gate(gate, output_size, output_dtype)
+    if gate_col is None:
+        return modelopt_fp4_apply_quantized_linear_batched_per_col_residual_gate(
+            layer,
+            x_fp4,
+            x_scale_interleaved,
+            input_shape,
+            output_dtype,
+            residual,
+            gate,
+            bias,
+        )
+
+    weights_padding_cols = getattr(layer, "weights_padding_cols", 0)
+    x_fp4 = pad_nvfp4_activation_for_cutlass(x_fp4, weights_padding_cols)
+
+    w = layer.weight
+    w_scale_interleaved = layer.weight_scale_interleaved
+    if int(w.shape[0]) != int(output_size):
+        return None
+    if x_scale_interleaved.dtype == torch.uint8:
+        x_scale_interleaved = x_scale_interleaved.view(torch.float8_e4m3fn)
+    if w_scale_interleaved.dtype == torch.uint8:
+        w_scale_interleaved = w_scale_interleaved.view(torch.float8_e4m3fn)
+
+    residual_2d = residual.reshape(-1, output_size)
+    if not residual_2d.is_contiguous():
+        residual_2d = residual_2d.contiguous()
+
+    alpha = layer.alpha
+    if alpha.numel() != 1:
+        return None
+    gate_alpha = (gate_col.float() * alpha.float().reshape(())).to(output_dtype).contiguous()
+    bias_gate = (bias.float() * gate_col.float()).to(output_dtype).contiguous()
+
+    out = fused_gemm(
+        x_fp4,
+        w,
+        x_scale_interleaved,
+        w_scale_interleaved,
+        alpha,
+        residual_2d,
+        gate_alpha,
+        bias_gate,
+        output_dtype,
+    )
+    out = slice_nvfp4_output(out, output_size)
+    return out.view(*output_shape)
+
+
+def modelopt_fp4_apply_linear_per_col_residual_gate(
+    layer: torch.nn.Module,
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    gate: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor | None:
+    batched = modelopt_fp4_apply_linear_batched_per_col_residual_gate(
+        layer, x, residual, gate, bias
+    )
+    if batched is not None:
+        return batched
+
+    x_fp4, x_scale_interleaved, input_shape, output_dtype = modelopt_fp4_quantize_activation(
+        x, layer.input_scale_inv
+    )
+    return modelopt_fp4_apply_quantized_linear_per_col_residual_gate(
+        layer,
+        x_fp4,
+        x_scale_interleaved,
+        input_shape,
+        output_dtype,
+        residual,
+        gate,
+        bias,
+    )
 
 
 class ModelOptFp4LinearMethod(LinearMethodBase):

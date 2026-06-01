@@ -105,7 +105,18 @@ def _jit_nvfp4_scaled_mm_module() -> Module:
                 "gemm/nvfp4/nvfp4_scaled_mm_kernels.cuh",
                 "gemm/nvfp4/nvfp4_scaled_mm_entry.cuh",
             ],
-            cuda_wrappers=[("cutlass_scaled_fp4_mm", "cutlass_scaled_fp4_mm")],
+            cuda_wrappers=[
+                ("cutlass_scaled_fp4_mm", "cutlass_scaled_fp4_mm"),
+                ("cutlass_scaled_fp4_mm_bias_gelu", "cutlass_scaled_fp4_mm_bias_gelu"),
+                (
+                    "cutlass_scaled_fp4_mm_per_col_residual_gate",
+                    "cutlass_scaled_fp4_mm_per_col_residual_gate",
+                ),
+                (
+                    "cutlass_scaled_fp4_mm_batched_per_col_residual_gate",
+                    "cutlass_scaled_fp4_mm_batched_per_col_residual_gate",
+                ),
+            ],
             extra_dependencies=["cutlass"],
             extra_cuda_cflags=_nvfp4_cuda_flags(),
         )
@@ -141,6 +152,82 @@ def cutlass_scaled_fp4_mm(
     out = torch.empty((m, n), dtype=out_dtype, device=a.device)
     module = _jit_nvfp4_scaled_mm_module()
     module.cutlass_scaled_fp4_mm(out, a, b, block_scale_a, block_scale_b, alpha)
+    return out
+
+
+@debug_kernel_api
+def cutlass_scaled_fp4_mm_bias_gelu(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    block_scale_a: torch.Tensor,
+    block_scale_b: torch.Tensor,
+    alpha: torch.Tensor,
+    bias: torch.Tensor,
+    out_dtype: torch.dtype,
+) -> torch.Tensor:
+    assert a.ndim == 2 and b.ndim == 2
+    m, n = a.shape[0], b.shape[0]
+    out = torch.empty((m, n), dtype=out_dtype, device=a.device)
+    module = _jit_nvfp4_scaled_mm_module()
+    module.cutlass_scaled_fp4_mm_bias_gelu(
+        out, a, b, block_scale_a, block_scale_b, alpha, bias
+    )
+    return out
+
+
+@debug_kernel_api
+def cutlass_scaled_fp4_mm_per_col_residual_gate(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    block_scale_a: torch.Tensor,
+    block_scale_b: torch.Tensor,
+    alpha: torch.Tensor,
+    residual: torch.Tensor,
+    gate: torch.Tensor,
+    bias_gate: torch.Tensor,
+    out_dtype: torch.dtype,
+) -> torch.Tensor:
+    assert a.ndim == 2 and b.ndim == 2
+    m, n = a.shape[0], b.shape[0]
+    out = torch.empty((m, n), dtype=out_dtype, device=a.device)
+    module = _jit_nvfp4_scaled_mm_module()
+    module.cutlass_scaled_fp4_mm_per_col_residual_gate(
+        out, a, b, block_scale_a, block_scale_b, alpha, residual, gate, bias_gate
+    )
+    return out
+
+
+@debug_kernel_api
+def cutlass_scaled_fp4_mm_batched_per_col_residual_gate(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    block_scale_a: torch.Tensor,
+    block_scale_b: torch.Tensor,
+    alpha: torch.Tensor,
+    residual: torch.Tensor,
+    gate: torch.Tensor,
+    bias_gate: torch.Tensor,
+    out_dtype: torch.dtype,
+    batch_size: int,
+    m_per_batch: int,
+) -> torch.Tensor:
+    assert a.ndim == 2 and b.ndim == 2
+    m, n = a.shape[0], b.shape[0]
+    out = torch.empty((m, n), dtype=out_dtype, device=a.device)
+    module = _jit_nvfp4_scaled_mm_module()
+    module.cutlass_scaled_fp4_mm_batched_per_col_residual_gate(
+        out,
+        a,
+        b,
+        block_scale_a,
+        block_scale_b,
+        alpha,
+        residual,
+        gate,
+        bias_gate,
+        int(batch_size),
+        int(m_per_batch),
+    )
     return out
 
 

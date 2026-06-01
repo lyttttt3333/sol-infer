@@ -23,6 +23,39 @@ void cutlass_scaled_fp4_mm_sm100a_sm120a(
     tvm::ffi::TensorView B_sf,
     tvm::ffi::TensorView alpha);
 
+void cutlass_scaled_fp4_mm_bias_gelu_sm100a_sm120a(
+    tvm::ffi::TensorView D,
+    tvm::ffi::TensorView A,
+    tvm::ffi::TensorView B,
+    tvm::ffi::TensorView A_sf,
+    tvm::ffi::TensorView B_sf,
+    tvm::ffi::TensorView alpha,
+    tvm::ffi::TensorView bias);
+
+void cutlass_scaled_fp4_mm_per_col_residual_gate_sm100a_sm120a(
+    tvm::ffi::TensorView D,
+    tvm::ffi::TensorView A,
+    tvm::ffi::TensorView B,
+    tvm::ffi::TensorView A_sf,
+    tvm::ffi::TensorView B_sf,
+    tvm::ffi::TensorView alpha,
+    tvm::ffi::TensorView residual,
+    tvm::ffi::TensorView gate,
+    tvm::ffi::TensorView bias_gate);
+
+void cutlass_scaled_fp4_mm_batched_per_col_residual_gate_sm100a_sm120a(
+    tvm::ffi::TensorView D,
+    tvm::ffi::TensorView A,
+    tvm::ffi::TensorView B,
+    tvm::ffi::TensorView A_sf,
+    tvm::ffi::TensorView B_sf,
+    tvm::ffi::TensorView alpha,
+    tvm::ffi::TensorView residual,
+    tvm::ffi::TensorView gate,
+    tvm::ffi::TensorView bias_gate,
+    int64_t batch_size,
+    int64_t m_per_batch);
+
 void cutlass_scaled_fp4_mm(
     tvm::ffi::TensorView D,
     tvm::ffi::TensorView A,
@@ -31,4 +64,46 @@ void cutlass_scaled_fp4_mm(
     tvm::ffi::TensorView B_sf,
     tvm::ffi::TensorView alpha) {
   cutlass_scaled_fp4_mm_sm100a_sm120a(D, A, B, A_sf, B_sf, alpha);
+}
+
+void cutlass_scaled_fp4_mm_bias_gelu(
+    tvm::ffi::TensorView D,
+    tvm::ffi::TensorView A,
+    tvm::ffi::TensorView B,
+    tvm::ffi::TensorView A_sf,
+    tvm::ffi::TensorView B_sf,
+    tvm::ffi::TensorView alpha,
+    tvm::ffi::TensorView bias) {
+  cutlass_scaled_fp4_mm_bias_gelu_sm100a_sm120a(D, A, B, A_sf, B_sf, alpha, bias);
+}
+
+
+void cutlass_scaled_fp4_mm_per_col_residual_gate(
+    tvm::ffi::TensorView D,
+    tvm::ffi::TensorView A,
+    tvm::ffi::TensorView B,
+    tvm::ffi::TensorView A_sf,
+    tvm::ffi::TensorView B_sf,
+    tvm::ffi::TensorView alpha,
+    tvm::ffi::TensorView residual,
+    tvm::ffi::TensorView gate,
+    tvm::ffi::TensorView bias_gate) {
+  cutlass_scaled_fp4_mm_per_col_residual_gate_sm100a_sm120a(
+      D, A, B, A_sf, B_sf, alpha, residual, gate, bias_gate);
+}
+
+void cutlass_scaled_fp4_mm_batched_per_col_residual_gate(
+    tvm::ffi::TensorView D,
+    tvm::ffi::TensorView A,
+    tvm::ffi::TensorView B,
+    tvm::ffi::TensorView A_sf,
+    tvm::ffi::TensorView B_sf,
+    tvm::ffi::TensorView alpha,
+    tvm::ffi::TensorView residual,
+    tvm::ffi::TensorView gate,
+    tvm::ffi::TensorView bias_gate,
+    int64_t batch_size,
+    int64_t m_per_batch) {
+  cutlass_scaled_fp4_mm_batched_per_col_residual_gate_sm100a_sm120a(
+      D, A, B, A_sf, B_sf, alpha, residual, gate, bias_gate, batch_size, m_per_batch);
 }

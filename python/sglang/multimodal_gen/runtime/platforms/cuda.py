@@ -220,6 +220,22 @@ class CudaPlatformBase(Platform):
     @lru_cache(maxsize=1)
     def get_modelopt_fp4_gemm_op(cls) -> tuple[Callable | None, str | None]:
         requested_backend = envs.SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND
+        if requested_backend is not None and requested_backend.lower() in {
+            "sgl_kernel",
+            "sglang",
+            "jit_cutlass",
+        }:
+            try:
+                from sglang.jit_kernel.nvfp4 import cutlass_scaled_fp4_mm
+
+                return cutlass_scaled_fp4_mm, None
+            except ImportError:
+                logger.warning(
+                    "Requested SGLANG_DIFFUSION_FLASHINFER_FP4_GEMM_BACKEND=%r "
+                    "but sglang.jit_kernel.nvfp4 is unavailable. Falling back to "
+                    "FlashInfer.",
+                    requested_backend,
+                )
         prefer_flashinfer = requested_backend is not None or cls.is_blackwell()
 
         # Blackwell FP4 is fastest through FlashInfer's backend-specific kernels
