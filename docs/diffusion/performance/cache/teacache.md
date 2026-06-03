@@ -145,6 +145,17 @@ bash scripts/run_ltx23_teacache_hq_nonhq_matrix_10s.sh
 The report includes total, denoising, stage-1, and stage-2 timing plus TeaCache
 hit/compute counts and skipped step indices parsed from runtime logs.
 
+For visual debugging, the same runners support stage-1 output:
+
+```bash
+STAGE1_ONLY_OUTPUT=1 bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl
+SAVE_STAGE1_OUTPUT=1 bash scripts/run_ltx23_teacache_hq_nonhq_matrix_10s.sh
+```
+
+`STAGE1_ONLY_OUTPUT=1` skips stage-2 refine and decodes the upsampled stage-1
+latents as `stage1_out.mp4`. `SAVE_STAGE1_OUTPUT=1` keeps the normal final
+`out.mp4` and additionally writes `stage1_out.mp4` for each case.
+
 ### Reading the Speedup
 
 For LTX-2.3, TeaCache does not make every part of the request faster. The
@@ -165,6 +176,16 @@ Example interpretation:
 ### LTX-2.3 10s Benchmark, 2026-06-01
 
 Run: `ltx23-teacache-hq-nonhq-matrix-10s-full-4545670`.
+
+Main artifacts:
+
+```bash
+outputs/ltx23-teacache-hq-nonhq-matrix-10s-full-4545670/benchmark_summary.json
+outputs/ltx23-teacache-hq-nonhq-matrix-10s-full-4545670/benchmark_summary.md
+outputs/ltx23-teacache-hq-nonhq-matrix-10s-full-4545670/benchmark_report.html
+outputs/ltx23-teacache-hq-nonhq-matrix-10s-full-4545670/hq/prompt_1/compare.mp4
+outputs/ltx23-teacache-hq-nonhq-matrix-10s-full-4545670/nonhq/prompt_1/compare.mp4
+```
 
 Prompts:
 

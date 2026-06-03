@@ -18,6 +18,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.comfyui_latent_preparat
 from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding import DecodingStage
 from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding_av import (
     LTX2AVDecodingStage,
+    LTX2Stage1ExportStage,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.stages.denoising import DenoisingStage
 from sglang.multimodal_gen.runtime.pipelines_core.stages.denoising_av import (
@@ -90,6 +91,7 @@ __all__ = [
     "EncodingStage",
     "DecodingStage",
     "LTX2AVDecodingStage",
+    "LTX2Stage1ExportStage",
     "ImageEncodingStage",
     "ImageVAEEncodingStage",
     "LTX2ImageEncodingStage",

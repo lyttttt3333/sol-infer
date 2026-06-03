@@ -37,6 +37,7 @@ ROOT="${ROOT:-outputs/ltx23-sglang-nonhq-cache-10s}"
 PROMPT_INDEX="${PROMPT_INDEX:-0}"
 OUT_DIR="${OUT_DIR:-$ROOT/prompt_${PROMPT_INDEX}/$VARIANT}"
 OUT_VIDEO="$OUT_DIR/out.mp4"
+STAGE1_VIDEO="$OUT_DIR/stage1_out.mp4"
 PERF_JSON="$OUT_DIR/perf.json"
 WIDTH="${WIDTH:-1920}"
 HEIGHT="${HEIGHT:-1088}"
@@ -45,6 +46,8 @@ FPS="${FPS:-24}"
 PROMPT="${PROMPT:-A cinematic 10 second aerial shot of an antique brass clockwork train crossing a snowy mountain bridge at sunrise, steam drifting through golden light, smooth camera movement, high detail}"
 NEGATIVE_PROMPT="${NEGATIVE_PROMPT:-blurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, wrong hand count, artifacts around text, inconsistent perspective, camera shake, incorrect depth of field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, wrong gaze direction, mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, off-sync audio, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, flat lighting, inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts.}"
 SEED="${SEED:-42}"
+SAVE_STAGE1_OUTPUT="${SAVE_STAGE1_OUTPUT:-0}"
+STAGE1_ONLY_OUTPUT="${STAGE1_ONLY_OUTPUT:-0}"
 FORCE="${FORCE:-0}"
 WARMUP="${WARMUP:-false}"
 WARMUP_STEPS="${WARMUP_STEPS:-1}"
@@ -53,6 +56,13 @@ MASTER_PORT="${MASTER_PORT:-30005}"
 PERFORMANCE_MODE="${PERFORMANCE_MODE:-${SGLANG_LTX2_PERFORMANCE_MODE:-speed}}"
 TWO_STAGE_DEVICE_MODE="${TWO_STAGE_DEVICE_MODE:-${SGLANG_LTX2_TWO_STAGE_DEVICE_MODE:-resident}}"
 export PERFORMANCE_MODE TWO_STAGE_DEVICE_MODE
+export SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_1="${SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_1:-${SGLANG_LTX2_STAGE1_DISTILLED_LORA_STRENGTH:-0.0}}"
+export SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_2="${SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_2:-${SGLANG_LTX2_STAGE2_DISTILLED_LORA_STRENGTH:-1.0}}"
+
+if [[ "$STAGE1_ONLY_OUTPUT" =~ ^(1|true|yes|on)$ ]]; then
+  OUT_VIDEO="$STAGE1_VIDEO"
+  PERF_JSON="$OUT_DIR/stage1_perf.json"
+fi
 
 for required in "$PYTHON_BIN" "$MODEL_PATH/model_index.json" "$DISTILLED_LORA" "$SPATIAL_UPSAMPLER"; do
   if [[ ! -e "$required" ]]; then
@@ -266,12 +276,32 @@ export SGLANG_NONHQ_SPARSE_ALGO="$SPARSE_ALGO"
 
 mkdir -p "$OUT_DIR"
 if [[ "$FORCE" != "1" && -s "$OUT_VIDEO" && -s "$PERF_JSON" ]]; then
-  echo "[skip] $VARIANT prompt=$PROMPT_INDEX already exists: $OUT_VIDEO"
-  exit 0
+  if [[ "$SAVE_STAGE1_OUTPUT" =~ ^(1|true|yes|on)$ && ! -s "$STAGE1_VIDEO" ]]; then
+    :
+  else
+    echo "[skip] $VARIANT prompt=$PROMPT_INDEX already exists: $OUT_VIDEO"
+    exit 0
+  fi
+fi
+
+if [[ "$STAGE1_ONLY_OUTPUT" =~ ^(1|true|yes|on)$ ]]; then
+  export SGLANG_LTX2_STAGE1_ONLY_OUTPUT=1
+  unset SGLANG_LTX2_SAVE_STAGE1_OUTPUT
+  unset SGLANG_LTX2_STAGE1_OUTPUT_PATH
+elif [[ "$SAVE_STAGE1_OUTPUT" =~ ^(1|true|yes|on)$ ]]; then
+  unset SGLANG_LTX2_STAGE1_ONLY_OUTPUT
+  export SGLANG_LTX2_SAVE_STAGE1_OUTPUT=1
+  export SGLANG_LTX2_STAGE1_OUTPUT_PATH="$STAGE1_VIDEO"
+else
+  unset SGLANG_LTX2_STAGE1_ONLY_OUTPUT
+  unset SGLANG_LTX2_SAVE_STAGE1_OUTPUT
+  unset SGLANG_LTX2_STAGE1_OUTPUT_PATH
 fi
 
 cat > "$OUT_DIR/run_command.txt" <<EOF
 SGLANG_NONHQ_VARIANT=$VARIANT PROMPT_INDEX=$PROMPT_INDEX CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES \
+SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_1=$SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_1 \
+SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_2=$SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_2 \
 $PYTHON_BIN -m sglang.multimodal_gen.runtime.entrypoints.cli.main generate \
   --model-path "$MODEL_PATH" \
   --backend auto \
@@ -299,6 +329,11 @@ EOF
 import json, os, sys
 from pathlib import Path
 out_dir = Path(sys.argv[1])
+
+def float_env(name, default):
+    value = os.environ.get(name)
+    return float(value) if value not in (None, "") else float(default)
+
 summary = {
     "variant": f"sglang_nonhq_{sys.argv[2]}",
     "prompt_index": int(sys.argv[3]),
@@ -308,6 +343,11 @@ summary = {
     "distilled_lora": sys.argv[6],
     "spatial_upsampler": sys.argv[7],
     "seed": int(sys.argv[9]),
+    "stage1_only_output": os.environ.get("STAGE1_ONLY_OUTPUT", "0").lower() in {"1", "true", "yes", "on"},
+    "stage1_output_video": str(out_dir / "stage1_out.mp4") if (
+        os.environ.get("SAVE_STAGE1_OUTPUT", "0").lower() in {"1", "true", "yes", "on"}
+        or os.environ.get("STAGE1_ONLY_OUTPUT", "0").lower() in {"1", "true", "yes", "on"}
+    ) else None,
     "height": int(os.environ.get("HEIGHT", "1088")),
     "width": int(os.environ.get("WIDTH", "1920")),
     "num_frames": int(os.environ.get("NUM_FRAMES", "241")),
@@ -324,8 +364,8 @@ summary = {
     "stage2_sigmas": [0.909375, 0.725, 0.421875, 0.0],
     "stage2_steps": 3,
     "stage2_sampler": "euler",
-    "stage1_lora_strength": 0.0,
-    "stage2_lora_strength": 1.0,
+    "stage1_lora_strength": float_env("SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_1", 0.0),
+    "stage2_lora_strength": float_env("SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_2", 1.0),
     "video_cfg_scale": 3.0,
     "video_stg_scale": 1.0,
     "video_rescale_scale": 0.7,

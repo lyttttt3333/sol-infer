@@ -39,6 +39,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages import (
     LTX2ImageEncodingStage,
     LTX2LoRASwitchStage,
     LTX2RefinementStage,
+    LTX2Stage1ExportStage,
     LTX2TextConnectorStage,
     LTX2UpsampleStage,
     TextEncodingStage,
@@ -952,19 +953,31 @@ class LTX2TwoStagePipeline(_BaseLTX2Pipeline):
         if phase == "stage1":
             default_strength = self.STAGE_1_DISTILLED_LORA_STRENGTH
             extra_key = "ltx2_distilled_lora_strength_stage_1"
+            env_keys = (
+                "SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_1",
+                "SGLANG_LTX2_STAGE1_DISTILLED_LORA_STRENGTH",
+            )
         elif phase == "stage2":
             default_strength = self.STAGE_2_DISTILLED_LORA_STRENGTH
             extra_key = "ltx2_distilled_lora_strength_stage_2"
+            env_keys = (
+                "SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_2",
+                "SGLANG_LTX2_STAGE2_DISTILLED_LORA_STRENGTH",
+            )
         else:
             raise ValueError(f"Unknown LTX2 two-stage LoRA phase: {phase}")
 
-        if batch is None:
-            return float(default_strength)
+        for env_key in env_keys:
+            env_strength = os.getenv(env_key)
+            if env_strength not in (None, ""):
+                return float(env_strength)
 
-        request_strength = batch.extra.get(extra_key)
-        if request_strength is None:
-            return float(default_strength)
-        return float(request_strength)
+        if batch is not None:
+            request_strength = batch.extra.get(extra_key)
+            if request_strength is not None:
+                return float(request_strength)
+
+        return float(default_strength)
 
     def _can_short_circuit_lora_switch(
         self, phase: str, batch: Req | None = None
@@ -1096,28 +1109,48 @@ class LTX2TwoStagePipeline(_BaseLTX2Pipeline):
                     pipeline=self,
                 ),
                 (
-                    LTX2LoRASwitchStage(pipeline=self, phase="stage2"),
-                    "ltx2_lora_switch_stage2",
-                ),
-                (
-                    LTX2ImageEncodingStage(
+                    LTX2Stage1ExportStage(
                         vae=self.get_module("vae"),
+                        audio_vae=self.get_module("audio_vae"),
+                        vocoder=self.get_module("vocoder"),
+                        pipeline=self,
                     ),
-                    "ltx2_image_encoding_stage2",
-                ),
-                LTX2RefinementStage(
-                    transformer=self.get_module(
-                        "transformer_2", self.get_module("transformer")
-                    ),
-                    scheduler=self.get_module("scheduler"),
-                    distilled_sigmas=self.STAGE_2_DISTILLED_SIGMA_VALUES,
-                    vae=self.get_module("vae"),
-                    audio_vae=self.get_module("audio_vae"),
-                    pipeline=self,
-                    sampler_name=self.STAGE_2_DENOISING_SAMPLER_NAME,
+                    "ltx2_stage1_export",
                 ),
             ]
         )
+
+        if get_bool_env_var("SGLANG_LTX2_STAGE1_ONLY_OUTPUT"):
+            logger.info(
+                "SGLANG_LTX2_STAGE1_ONLY_OUTPUT is enabled; skipping LTX2 Stage 2 "
+                "refinement and decoding the upsampled Stage 1 latents."
+            )
+        else:
+            self.add_stages(
+                [
+                    (
+                        LTX2LoRASwitchStage(pipeline=self, phase="stage2"),
+                        "ltx2_lora_switch_stage2",
+                    ),
+                    (
+                        LTX2ImageEncodingStage(
+                            vae=self.get_module("vae"),
+                        ),
+                        "ltx2_image_encoding_stage2",
+                    ),
+                    LTX2RefinementStage(
+                        transformer=self.get_module(
+                            "transformer_2", self.get_module("transformer")
+                        ),
+                        scheduler=self.get_module("scheduler"),
+                        distilled_sigmas=self.STAGE_2_DISTILLED_SIGMA_VALUES,
+                        vae=self.get_module("vae"),
+                        audio_vae=self.get_module("audio_vae"),
+                        pipeline=self,
+                        sampler_name=self.STAGE_2_DENOISING_SAMPLER_NAME,
+                    ),
+                ]
+            )
         _add_ltx2_decoding_stage(self)
 
 

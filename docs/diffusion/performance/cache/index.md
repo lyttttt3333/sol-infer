@@ -38,6 +38,10 @@ The runner covers:
 - Outputs: per-case `out.mp4`, `perf.json`, `*_semantics.json`, logs, side by
   side compare videos, `benchmark_summary.json`, `benchmark_summary.md`, and
   `benchmark_report.html`.
+- Stage-1 inspection: set `STAGE1_ONLY_OUTPUT=1` to skip stage 2 and decode the
+  upsampled stage-1 latents as the final video. Set `SAVE_STAGE1_OUTPUT=1` to
+  additionally save `stage1_out.mp4` while still running the normal stage-2
+  refine path.
 
 Latest run (`ltx23-teacache-hq-nonhq-matrix-10s-full-4545670`, 2026-06-01):
 
@@ -54,6 +58,42 @@ Latest run (`ltx23-teacache-hq-nonhq-matrix-10s-full-4545670`, 2026-06-01):
   acceleration and inspect compare videos before accepting visual quality. Do
   not treat total pipeline speedup from this offload configuration as the upper
   bound of the cache algorithm itself.
+
+### HQ stage-1 color probe
+
+Prompt 1 in the TeaCache matrix showed an overexposed HQ KWL baseline while the
+non-HQ KWL output looked normal. The stage-1-only probe was run to separate
+stage 1, stage 2, LoRA, and KWL fused-ada effects:
+
+```bash
+outputs/ltx23-hq-stage1-lora-ablation-20260602-10/stage1_lora_ada_compare.mp4
+outputs/ltx23-hq-stage1-lora-ablation-20260602-10/color_stats.json
+```
+
+First-frame color statistics from that run:
+
+| Case | Luma mean | RGB mean | Clip >=250 RGB | Notes |
+|---|---:|---|---|---|
+| HQ stage1 KWL, fused-ada on | 200.10 | `[195.84, 220.49, 26.80]` | `[0.3579, 0.4730, 0.0351]` | Stage-1-only output, very bright. |
+| HQ stage1 KWL, fused-ada off | 200.10 | `[195.84, 220.49, 26.80]` | `[0.3579, 0.4730, 0.0351]` | Same as fused-ada on in this probe. |
+| Non-HQ stage1 KWL | 99.23 | `[116.77, 102.32, 16.74]` | `[0.0067, 0.0006, 0.0001]` | Same prompt/seed, normal exposure. |
+| Old HQ final KWL | 214.15 | `[205.51, 238.31, 19.70]` | `[0.3923, 0.7791, 0.0314]` | Stage-2 refine worsens green clipping. |
+| Old non-HQ final KWL | 75.05 | `[85.04, 78.97, 6.74]` | `[0.0006, 0.0000, 0.0000]` | Normal exposure. |
+
+Interpretation:
+
+- The HQ exposure issue is already visible in the decoded upsampled stage-1
+  latents, before stage-2 refine.
+- `SGLANG_HQ_KWL_FUSED_ADA_VALUES_ALL` did not change the stage-1-only output in
+  this probe, so fused-ada is not the root cause of the HQ stage-1 brightness.
+- Logs from this completed probe showed the requested `stage1_lora=0.0` cases
+  were still applying the default stage-1 distilled LoRA strength `0.25`, because
+  `LTX23HQSamplingParams.build_request_extra()` default values overrode the env
+  override. The code now makes `SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_1` and
+  `SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_2` take precedence for experiments.
+  A follow-up full-video LoRA=0 rerun was attempted but canceled after repeated
+  cluster startup stalls at text-encoder load, so LoRA=0 visual quality is still
+  an open ablation rather than an accepted conclusion.
 
 ## Cache-DiT
 

@@ -10,9 +10,13 @@ from sglang.multimodal_gen.runtime.managers.memory_managers.component_manager im
 )
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import OutputBatch, Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages.decoding import DecodingStage
+from sglang.multimodal_gen.runtime.pipelines_core.stages.base import PipelineStage
 from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
-from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
+from sglang.multimodal_gen.runtime.utils.logging_utils import (
+    get_is_main_process,
+    init_logger,
+)
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 
 logger = init_logger(__name__)
@@ -41,6 +45,57 @@ def _compile_tiled_video_vae_decoder_enabled() -> bool:
 def _video_vae_compile_mode() -> str:
     return os.environ.get(
         "SGLANG_LTX2_VAE_COMPILE_MODE", "max-autotune-no-cudagraphs"
+    )
+
+
+def _ltx2_stage1_export_path(batch: Req) -> str | None:
+    if _env_flag_enabled("SGLANG_LTX2_STAGE1_ONLY_OUTPUT"):
+        return None
+    explicit_path = os.environ.get("SGLANG_LTX2_STAGE1_OUTPUT_PATH")
+    if explicit_path:
+        return explicit_path
+    if not _env_flag_enabled("SGLANG_LTX2_SAVE_STAGE1_OUTPUT"):
+        return None
+    output_file_path = batch.output_file_path()
+    if not output_file_path:
+        return None
+    stem, ext = os.path.splitext(output_file_path)
+    return f"{stem}.stage1{ext or '.mp4'}"
+
+
+def _indexed_output_path(output_path: str, idx: int, count: int) -> str:
+    if count <= 1:
+        return output_path
+    stem, ext = os.path.splitext(output_path)
+    return f"{stem}_{idx}{ext}"
+
+
+def _save_ltx2_output_batch(
+    *,
+    output_batch: OutputBatch,
+    batch: Req,
+    output_path: str,
+) -> list[str]:
+    from sglang.multimodal_gen.runtime.entrypoints.utils import save_outputs
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    count = len(output_batch.output) if output_batch.output is not None else 0
+    return save_outputs(
+        output_batch.output,
+        batch.data_type,
+        batch.fps,
+        True,
+        lambda idx: _indexed_output_path(output_path, idx, count),
+        audio=output_batch.audio,
+        audio_sample_rate=output_batch.audio_sample_rate,
+        output_compression=batch.output_compression,
+        enable_frame_interpolation=batch.enable_frame_interpolation,
+        frame_interpolation_exp=batch.frame_interpolation_exp,
+        frame_interpolation_scale=batch.frame_interpolation_scale,
+        frame_interpolation_model_path=batch.frame_interpolation_model_path,
+        enable_upscaling=batch.enable_upscaling,
+        upscaling_model_path=batch.upscaling_model_path,
+        upscaling_scale=batch.upscaling_scale,
     )
 
 
@@ -398,4 +453,74 @@ class LTX2AVDecodingStage(DecodingStage):
                 vocoder_sr or audio_vae_sr or pipeline_audio_sr
             )
 
+        self._save_stage1_export_if_requested(batch, server_args)
         return output_batch
+
+    def _save_stage1_export_if_requested(
+        self, batch: Req, server_args: ServerArgs
+    ) -> None:
+        if batch.extra.get("_ltx2_stage1_export_decode_active"):
+            return
+        output_path = _ltx2_stage1_export_path(batch)
+        if not output_path or not get_is_main_process():
+            return
+        stage1_latents = batch.extra.get("ltx2_stage1_export_latents")
+        if not isinstance(stage1_latents, torch.Tensor):
+            return
+
+        original_latents = batch.latents
+        original_audio_latents = batch.audio_latents
+        original_flag = batch.extra.get("_ltx2_stage1_export_decode_active")
+        batch.latents = stage1_latents
+        batch.audio_latents = batch.extra.get("ltx2_stage1_export_audio_latents")
+        batch.extra["_ltx2_stage1_export_decode_active"] = True
+        try:
+            stage1_output_batch = self.forward(batch, server_args)
+            if stage1_output_batch.output is not None:
+                saved_paths = _save_ltx2_output_batch(
+                    output_batch=stage1_output_batch,
+                    batch=batch,
+                    output_path=output_path,
+                )
+                logger.info("Saved LTX2 stage1 pre-refine output: %s", saved_paths)
+        except Exception:
+            logger.warning("Failed to save LTX2 stage1 pre-refine output", exc_info=True)
+        finally:
+            batch.latents = original_latents
+            batch.audio_latents = original_audio_latents
+            if original_flag is None:
+                batch.extra.pop("_ltx2_stage1_export_decode_active", None)
+            else:
+                batch.extra["_ltx2_stage1_export_decode_active"] = original_flag
+
+
+class LTX2Stage1ExportStage(PipelineStage):
+    """Capture pre-refinement two-stage latents for deferred Stage1 export."""
+
+    def __init__(self, vae, audio_vae, vocoder, pipeline=None):
+        super().__init__()
+
+    def component_uses(
+        self, server_args: ServerArgs, stage_name: str | None = None
+    ) -> list[ComponentUse]:
+        return []
+
+    def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+        output_path = _ltx2_stage1_export_path(batch)
+        if not output_path:
+            return batch
+
+        if (
+            "ltx2_stage1_export_latents" not in batch.extra
+            and isinstance(batch.latents, torch.Tensor)
+        ):
+            batch.extra["ltx2_stage1_export_latents"] = batch.latents.detach().cpu()
+        if (
+            "ltx2_stage1_export_audio_latents" not in batch.extra
+            and isinstance(batch.audio_latents, torch.Tensor)
+        ):
+            batch.extra["ltx2_stage1_export_audio_latents"] = (
+                batch.audio_latents.detach().cpu()
+            )
+
+        return batch

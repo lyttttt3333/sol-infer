@@ -29,6 +29,28 @@ def _dump_ltx2_upsample_debug_if_requested(name: str, tensor: torch.Tensor | Non
     )
 
 
+def _ltx2_stage1_export_requested() -> bool:
+    if _ltx2_stage1_only_output_requested():
+        return False
+    if os.environ.get("SGLANG_LTX2_STAGE1_OUTPUT_PATH"):
+        return True
+    return os.environ.get("SGLANG_LTX2_SAVE_STAGE1_OUTPUT", "0").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _ltx2_stage1_only_output_requested() -> bool:
+    return os.environ.get("SGLANG_LTX2_STAGE1_ONLY_OUTPUT", "0").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 class LTX2HalveResolutionStage(PipelineStage):
     """Halve batch height/width for two-stage Stage 1 (low-res generation)."""
 
@@ -159,6 +181,23 @@ class LTX2UpsampleStage(PipelineStage):
         batch.ltx2_num_image_tokens = 0
         batch.did_sp_shard_latents = False
         batch.did_sp_shard_audio_latents = False
+        if _ltx2_stage1_export_requested():
+            batch.extra["ltx2_stage1_export_latents"] = latents.detach().cpu()
+            if isinstance(batch.audio_latents, torch.Tensor):
+                batch.extra["ltx2_stage1_export_audio_latents"] = (
+                    batch.audio_latents.detach().cpu()
+                )
+        if _ltx2_stage1_only_output_requested():
+            batch.latents = latents
+            batch.raw_latent_shape = latents.shape
+            logger.info(
+                "Using upsampled Stage 1 latents as final output: %s "
+                "(resolution %dx%d)",
+                list(batch.latents.shape),
+                batch.height,
+                batch.width,
+            )
+            return batch
         self._pack_video_latents(batch, latents, server_args)
         logger.info(
             "Packed video latents for Stage 2: %s (resolution %dx%d)",

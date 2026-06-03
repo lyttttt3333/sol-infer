@@ -10,6 +10,8 @@ FORCE="${FORCE:-1}"
 WARMUP="${WARMUP:-false}"
 WARMUP_STEPS="${WARMUP_STEPS:-1}"
 SEED="${SEED:-42}"
+SAVE_STAGE1_OUTPUT="${SAVE_STAGE1_OUTPUT:-0}"
+STAGE1_ONLY_OUTPUT="${STAGE1_ONLY_OUTPUT:-0}"
 PYTHON_BIN="${PYTHON_BIN:-$PWD/.conda/ltx23/bin/python}"
 BASE_PORT="${BASE_PORT:-30410}"
 DEVICES_CSV="${DEVICES:-0,1,2,3,4,5,6,7}"
@@ -79,6 +81,8 @@ launch_task() {
     export WARMUP="$WARMUP"
     export WARMUP_STEPS="$WARMUP_STEPS"
     export SEED="$SEED"
+    export SAVE_STAGE1_OUTPUT="$SAVE_STAGE1_OUTPUT"
+    export STAGE1_ONLY_OUTPUT="$STAGE1_ONLY_OUTPUT"
     export MASTER_PORT="$port"
     export PYTHON_BIN="$PYTHON_BIN"
     if [[ "$pipeline" == "hq" ]]; then
@@ -125,42 +129,91 @@ if [[ "$failed" != "0" ]]; then
 fi
 
 for prompt_idx in "${!prompts[@]}"; do
-  hq_args=()
-  for variant in "${hq_variants[@]}"; do
-    video="$ROOT/hq/prompt_${prompt_idx}/$variant/out.mp4"
-    if [[ -s "$video" ]]; then
-      hq_args+=(--item "$(variant_label "$variant")=$video")
-    elif [[ "$ALLOW_PARTIAL" =~ ^(1|true|yes|on)$ ]]; then
-      echo "[warn] missing $video; omitting from HQ prompt $prompt_idx compare" >&2
-    else
-      echo "[error] missing $video" >&2
-      exit 2
+  if [[ ! "$STAGE1_ONLY_OUTPUT" =~ ^(1|true|yes|on)$ ]]; then
+    hq_args=()
+    for variant in "${hq_variants[@]}"; do
+      video="$ROOT/hq/prompt_${prompt_idx}/$variant/out.mp4"
+      if [[ -s "$video" ]]; then
+        hq_args+=(--item "$(variant_label "$variant")=$video")
+      elif [[ "$ALLOW_PARTIAL" =~ ^(1|true|yes|on)$ ]]; then
+        echo "[warn] missing $video; omitting from HQ prompt $prompt_idx compare" >&2
+      else
+        echo "[error] missing $video" >&2
+        exit 2
+      fi
+    done
+    if (( ${#hq_args[@]} >= 4 )); then
+      "$PYTHON_BIN" scripts/make_multiway_video.py "${hq_args[@]}" \
+        --cols "${HQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
+        --out "$ROOT/hq/prompt_${prompt_idx}/compare.mp4"
     fi
-  done
-  if (( ${#hq_args[@]} >= 4 )); then
-    "$PYTHON_BIN" scripts/make_multiway_video.py "${hq_args[@]}" \
-      --cols "${HQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
-      --out "$ROOT/hq/prompt_${prompt_idx}/compare.mp4"
   fi
 
-  nonhq_args=()
-  for variant in "${nonhq_variants[@]}"; do
-    video="$ROOT/nonhq/prompt_${prompt_idx}/$variant/out.mp4"
-    if [[ -s "$video" ]]; then
-      nonhq_args+=(--item "$(variant_label "$variant")=$video")
-    elif [[ "$ALLOW_PARTIAL" =~ ^(1|true|yes|on)$ ]]; then
-      echo "[warn] missing $video; omitting from non-HQ prompt $prompt_idx compare" >&2
-    else
-      echo "[error] missing $video" >&2
-      exit 2
+  if [[ "$SAVE_STAGE1_OUTPUT" =~ ^(1|true|yes|on)$ || "$STAGE1_ONLY_OUTPUT" =~ ^(1|true|yes|on)$ ]]; then
+    hq_stage1_args=()
+    for variant in "${hq_variants[@]}"; do
+      video="$ROOT/hq/prompt_${prompt_idx}/$variant/stage1_out.mp4"
+      if [[ -s "$video" ]]; then
+        hq_stage1_args+=(--item "$(variant_label "$variant")=$video")
+      elif [[ "$ALLOW_PARTIAL" =~ ^(1|true|yes|on)$ ]]; then
+        echo "[warn] missing $video; omitting from HQ prompt $prompt_idx stage1 compare" >&2
+      else
+        echo "[error] missing $video" >&2
+        exit 2
+      fi
+    done
+    if (( ${#hq_stage1_args[@]} >= 4 )); then
+      "$PYTHON_BIN" scripts/make_multiway_video.py "${hq_stage1_args[@]}" \
+        --cols "${HQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
+        --out "$ROOT/hq/prompt_${prompt_idx}/stage1_compare.mp4"
     fi
-  done
-  if (( ${#nonhq_args[@]} >= 4 )); then
-    "$PYTHON_BIN" scripts/make_multiway_video.py "${nonhq_args[@]}" \
-      --cols "${NONHQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
-      --out "$ROOT/nonhq/prompt_${prompt_idx}/compare.mp4"
+  fi
+
+  if [[ ! "$STAGE1_ONLY_OUTPUT" =~ ^(1|true|yes|on)$ ]]; then
+    nonhq_args=()
+    for variant in "${nonhq_variants[@]}"; do
+      video="$ROOT/nonhq/prompt_${prompt_idx}/$variant/out.mp4"
+      if [[ -s "$video" ]]; then
+        nonhq_args+=(--item "$(variant_label "$variant")=$video")
+      elif [[ "$ALLOW_PARTIAL" =~ ^(1|true|yes|on)$ ]]; then
+        echo "[warn] missing $video; omitting from non-HQ prompt $prompt_idx compare" >&2
+      else
+        echo "[error] missing $video" >&2
+        exit 2
+      fi
+    done
+    if (( ${#nonhq_args[@]} >= 4 )); then
+      "$PYTHON_BIN" scripts/make_multiway_video.py "${nonhq_args[@]}" \
+        --cols "${NONHQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
+        --out "$ROOT/nonhq/prompt_${prompt_idx}/compare.mp4"
+    fi
+  fi
+
+  if [[ "$SAVE_STAGE1_OUTPUT" =~ ^(1|true|yes|on)$ || "$STAGE1_ONLY_OUTPUT" =~ ^(1|true|yes|on)$ ]]; then
+    nonhq_stage1_args=()
+    for variant in "${nonhq_variants[@]}"; do
+      video="$ROOT/nonhq/prompt_${prompt_idx}/$variant/stage1_out.mp4"
+      if [[ -s "$video" ]]; then
+        nonhq_stage1_args+=(--item "$(variant_label "$variant")=$video")
+      elif [[ "$ALLOW_PARTIAL" =~ ^(1|true|yes|on)$ ]]; then
+        echo "[warn] missing $video; omitting from non-HQ prompt $prompt_idx stage1 compare" >&2
+      else
+        echo "[error] missing $video" >&2
+        exit 2
+      fi
+    done
+    if (( ${#nonhq_stage1_args[@]} >= 4 )); then
+      "$PYTHON_BIN" scripts/make_multiway_video.py "${nonhq_stage1_args[@]}" \
+        --cols "${NONHQ_COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
+        --out "$ROOT/nonhq/prompt_${prompt_idx}/stage1_compare.mp4"
+    fi
   fi
 done
+
+if [[ "$STAGE1_ONLY_OUTPUT" =~ ^(1|true|yes|on)$ ]]; then
+  echo "[done] stage1-only outputs: $ROOT"
+  exit 0
+fi
 
 "$PYTHON_BIN" scripts/make_ltx23_cache_report.py \
   --root "$ROOT" \
