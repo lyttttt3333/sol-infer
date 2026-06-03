@@ -184,10 +184,6 @@ outputs/ltx23-sglang-hq-kwl-sparse-cache-matrix-pab6-stage2off-1080p10s/benchmar
 outputs/ltx23-sglang-hq-kwl-sparse-cache-matrix-pab6-stage2off-1080p10s/kwl-vs-kwl-sparse-cache-side-by-side.mp4
 ```
 
-For the newer HQ/non-HQ TeaCache matrix, stage-1-only outputs, and the prompt-1
-HQ color probe, see `docs/diffusion/performance/cache/index.md` and
-`docs/diffusion/performance/cache/teacache.md`.
-
 ## Adoption and Sponsorship
 SGLang has been deployed at large scale, generating trillions of tokens in production each day. It is trusted and adopted by a wide range of leading enterprises and institutions, including xAI, AMD, NVIDIA, Intel, LinkedIn, Cursor, Oracle Cloud, Google Cloud, Microsoft Azure, AWS, Atlas Cloud, Voltage Park, Nebius, DataCrunch, Novita, InnoMatrix, MIT, UCLA, the University of Washington, Stanford, UC Berkeley, Tsinghua University, Jam & Tea Studios, Baseten, and other major technology organizations.
 As an open-source LLM inference engine, SGLang has become the de facto industry standard, with deployments running on over 400,000 GPUs worldwide.

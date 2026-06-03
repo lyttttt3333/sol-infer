@@ -6,6 +6,9 @@ SGLang has several cache-style acceleration paths for diffusion transformer
 models. They are not equivalent: some skip full transformer block-stack calls,
 some skip individual blocks, and some reuse attention results inside a block.
 
+The current LTX-2.3 cache experiment README lives in this directory:
+[README.md](README.md).
+
 | Strategy | Skip scope | How acceleration happens | Current LTX-2.3 status |
 |----------|------------|--------------------------|------------------------|
 | **TeaCache** | Timestep/block-stack residual replay | Compare consecutive modulated inputs. On a cache hit, skip the LTX2 transformer block stack for that denoising step and replay cached video/audio residuals. Output norm/projection/unpatchify still run. | Primary path for current HQ/non-HQ tests. Stage 1 enabled, stage 2 disabled by default. |
@@ -144,6 +147,7 @@ For Flux and Qwen models, TeaCache is automatically disabled when CFG is enabled
 :maxdepth: 1
 
 cache_dit
+README
 teacache
 ```
 
