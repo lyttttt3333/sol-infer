@@ -115,6 +115,39 @@ Initial high-threshold probe:
 /lustre/fsw/portfolios/nvr/projects/nvr_elm_llm/users/junsongc/staging/sol-ltx-infer-cosmos3-cache/outputs/cosmos3-teacache-16b-high-nrt-4594341
 ```
 
+Completed 16B threshold-scale sweep:
+
+```text
+Remote:
+/lustre/fsw/portfolios/nvr/projects/nvr_elm_llm/users/junsongc/staging/sol-ltx-infer-cosmos3-cache/outputs/cosmos3-teacache-16b-scale-nrt-4594652
+
+Local quick-look artifacts:
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-scale-nrt-4594652/compare.mp4
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-scale-nrt-4594652/benchmark_report.html
+```
+
+16B prompt-0 timing:
+
+| Variant | Threshold | Total s | Total x | Denoise s | Denoise x | Hits | Skipped steps | Visual readout |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| Baseline | - | 50.305 | 1.000 | 44.385 | 1.000 | - | - | Normal greenhouse/botanist output. |
+| TeaCache t1.05/start5 | 1.05 | 49.475 | 1.017 | 43.979 | 1.009 | 6 | `10,13,16,19,22,25` | Fog/noise overlay; not visually acceptable. |
+| TeaCache t1.10/start5 | 1.10 | 45.847 | 1.097 | 40.870 | 1.086 | 10 | `5,8,11,14,17,20,23,26,29,32` | Fog/noise overlay; not visually acceptable. |
+| TeaCache t1.15/start5 | 1.15 | 38.662 | 1.301 | 33.362 | 1.330 | 10 | `5,8,11,14,17,20,23,26,29,32` | Fog/noise overlay; not visually acceptable. |
+| TeaCache t1.20/start5 | 1.20 | 55.403 | 0.908 | 31.734 | 1.399 | 10 | `5,8,11,14,17,20,23,26,29,32` | Fog/noise overlay; not visually acceptable. Total time had a decode/postprocess outlier. |
+
+Readout:
+
+- Cosmos3 TeaCache threshold scale is confirmed to be around `1.x`, not LTX2's
+  `0.04-0.08` range.
+- `max_hits=1` caps the skip pattern at roughly every third step for this
+  prompt. `t1.15` is the best measured timing point in this run, but the visual
+  output is not acceptable.
+- The first and middle compare frames both show the same fog/noise overlay on
+  every TeaCache variant, including the mild `t1.05` case. This points to a
+  Cosmos3 TeaCache correctness issue to fix before increasing skip count or
+  treating the speedup as usable.
+
 ## TeaCache mechanism
 
 For LTX-2.3, TeaCache is stage/pass/shape keyed residual replay. The runtime
