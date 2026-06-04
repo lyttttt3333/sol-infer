@@ -253,3 +253,117 @@ git diff --check
 - Re-measure TeaCache in a setup where stage 2/offload/snapshot overhead does
   not dominate the wall clock, because the measured stage-1 speedup is stronger
   than the current end-to-end number.
+
+## Cosmos3 migration
+
+Cosmos3 support was imported from upstream SGLang into the
+`cosmos3-cache-migration` branch. The upstream native pipeline serves:
+
+- `nvidia/Cosmos3-Nano`
+- `nvidia/Cosmos3-Super`
+- `nvidia/Cosmos3-Super-Text2Image`
+- `nvidia/Cosmos3-Super-Image2Video`
+
+The local benchmark runner uses the user-facing size labels `16b` and `64b`,
+mapped by default to `nvidia/Cosmos3-Nano` and `nvidia/Cosmos3-Super`. Override
+the exact checkpoint paths with:
+
+```bash
+COSMOS3_16B_MODEL_PATH=/path/or/hf/id
+COSMOS3_64B_MODEL_PATH=/path/or/hf/id
+COSMOS3_16B_NUM_GPUS=1
+COSMOS3_64B_NUM_GPUS=4
+```
+
+### Cosmos3 cache hooks
+
+Cosmos3 has two pathways:
+
+- UND text pathway: runs once per prompt and already caches text K/V internally.
+- GEN visual pathway: runs every denoising step and is the target for cache
+  acceleration.
+
+Implemented hooks:
+
+| Method | Cosmos3 implementation | What gets skipped |
+|---|---|---|
+| TeaCache | `runtime/cache/cosmos3_teacache.py` plus a hook in `Cosmos3OmniTransformer.forward`. | Full `gen_layers` stack on accepted denoising steps. Norm/projection/unpatchify still run. |
+| PAB | `runtime/cache/cosmos3_pab.py`, installed by `Cosmos3DenoisingStage`. | GEN cross-attention output inside each generation layer for broadcast-window hits. |
+| DBCache / Cache-DiT | `runtime/cache/cosmos3_block_adapter.py` registers `Cosmos3` and `FSDPCosmos3` with cache-dit. | Cache-DiT block-level reuse over `transformer.gen_layers`. |
+
+TeaCache env knobs:
+
+```bash
+SGLANG_COSMOS3_TEACACHE_ENABLED=1
+SGLANG_COSMOS3_TEACACHE_THRESH=0.04
+SGLANG_COSMOS3_TEACACHE_START=5
+SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+```
+
+PAB env knobs:
+
+```bash
+SGLANG_COSMOS3_PAB_ENABLED=1
+SGLANG_COSMOS3_PAB_CROSS_WINDOW=2
+SGLANG_COSMOS3_PAB_WARMUP=5
+```
+
+DBCache env knobs use the existing Cache-DiT controls:
+
+```bash
+SGLANG_CACHE_DIT_ENABLED=1
+SGLANG_CACHE_DIT_FN=2
+SGLANG_CACHE_DIT_BN=2
+SGLANG_CACHE_DIT_WARMUP=5
+SGLANG_CACHE_DIT_RDT=0.12
+SGLANG_CACHE_DIT_MC=1
+```
+
+### Cosmos3 benchmark runner
+
+The runner uses two concrete prompts:
+
+- Human scene: elderly botanist watering orchids in a greenhouse.
+- Animal scene: red fox running across a snowy forest trail.
+
+Default matrix:
+
+```bash
+bash scripts/run_cosmos3_cache_matrix.sh
+```
+
+Default variants:
+
+```text
+baseline teacache_c04_s5 pab_cross2 dbcache_mild
+```
+
+Useful overrides:
+
+```bash
+ROOT=outputs/cosmos3-cache-matrix-$(date +%Y%m%d-%H%M%S) \
+MODEL_SIZES="16b 64b" \
+VARIANTS="baseline teacache_c04_s5 teacache_c08_s5 pab_cross2 dbcache_mild dbcache_target15" \
+HEIGHT=480 WIDTH=832 NUM_FRAMES=81 NUM_INFERENCE_STEPS=35 \
+bash scripts/run_cosmos3_cache_matrix.sh
+```
+
+Artifacts:
+
+```text
+<ROOT>/<model_size>/prompt_<idx>/<variant>/out.mp4
+<ROOT>/<model_size>/prompt_<idx>/<variant>/perf.json
+<ROOT>/<model_size>/prompt_<idx>/<variant>/semantics.json
+<ROOT>/<model_size>/prompt_<idx>/compare.mp4
+<ROOT>/benchmark_summary.json
+<ROOT>/benchmark_summary.md
+<ROOT>/benchmark_report.html
+```
+
+The report parser extracts total time, `Cosmos3DenoisingStage` time, TeaCache
+skip stats, and PAB hit stats from `perf.json` plus logs. Cache-DiT uses the
+existing cache-dit logs and speedup is read from total/denoise timing.
+
+Current status: code and local syntax checks are complete. Real 16B/64B speed
+and visual-quality acceptance still require cluster runs because this Mac does
+not have the required GPU/runtime dependencies.

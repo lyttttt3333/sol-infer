@@ -15,7 +15,15 @@ import PIL.Image
 import torch
 import torch.nn as nn
 
+from sglang.multimodal_gen import envs
 from sglang.multimodal_gen.configs.sample.sampling_params import DataType
+from sglang.multimodal_gen.runtime.cache import (
+    CacheDitConfig,
+    enable_cache_on_transformer,
+    get_scm_mask,
+    refresh_context_on_transformer,
+)
+from sglang.multimodal_gen.runtime.cache.cosmos3_pab import install_cosmos3_pab
 from sglang.multimodal_gen.runtime.distributed import get_local_torch_device
 from sglang.multimodal_gen.runtime.distributed.communication_op import (
     cfg_model_parallel_all_reduce,
@@ -23,8 +31,11 @@ from sglang.multimodal_gen.runtime.distributed.communication_op import (
 from sglang.multimodal_gen.runtime.distributed.parallel_state import (
     get_classifier_free_guidance_rank,
     get_classifier_free_guidance_world_size,
+    get_sp_group,
     get_sp_parallel_rank,
     get_sp_world_size,
+    get_tp_group,
+    get_world_size,
 )
 from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
@@ -412,9 +423,16 @@ class Cosmos3DenoisingStage(PipelineStage):
         self.scheduler = scheduler
         self.server_args = server_args
         self._logged_parallel_config = False
+        self._cache_dit_enabled = False
+        self._cached_num_steps: int | None = None
+        self._torch_compile_applied = False
 
         # Apply torch.compile if enabled
-        if server_args is not None:
+        if (
+            server_args is not None
+            and not envs.SGLANG_CACHE_DIT_ENABLED
+            and not envs.SGLANG_CACHE_DIT_TAYLORSEER
+        ):
             self._maybe_enable_torch_compile(transformer, server_args)
 
     def _maybe_enable_torch_compile(
@@ -437,6 +455,8 @@ class Cosmos3DenoisingStage(PipelineStage):
         if not server_args.enable_torch_compile or not isinstance(
             transformer, nn.Module
         ):
+            return
+        if self._torch_compile_applied:
             return
 
         if current_platform.is_npu():
@@ -475,8 +495,112 @@ class Cosmos3DenoisingStage(PipelineStage):
             )
             for i, layer in enumerate(gen_layers):
                 gen_layers[i] = torch.compile(layer, **compile_kwargs)
+            self._torch_compile_applied = True
         else:
             logger.warning("Cosmos3 gen_layers not found, skipping torch.compile")
+
+    def _maybe_enable_cache_dit(self, num_inference_steps: int, batch: Req) -> None:
+        if self._cache_dit_enabled:
+            scm_preset = envs.SGLANG_CACHE_DIT_SCM_PRESET
+            scm_preset = None if scm_preset == "none" else scm_preset
+            refresh_context_on_transformer(
+                self.transformer,
+                num_inference_steps,
+                scm_preset=scm_preset,
+            )
+            return
+
+        if not envs.SGLANG_CACHE_DIT_ENABLED:
+            return
+        if batch.is_warmup and not self.server_args.enable_torch_compile:
+            return
+
+        world_size = get_world_size()
+        sp_group = None
+        tp_group = None
+        if world_size > 1:
+            sp_group_candidate = get_sp_group()
+            tp_group_candidate = get_tp_group()
+
+            sp_world_size = sp_group_candidate.world_size if sp_group_candidate else 1
+            tp_world_size = tp_group_candidate.world_size if tp_group_candidate else 1
+
+            sp_group = (
+                sp_group_candidate.device_group if sp_world_size > 1 else None
+            )
+            tp_group = (
+                tp_group_candidate.device_group if tp_world_size > 1 else None
+            )
+
+            logger.info(
+                "Cosmos3 cache-dit distributed setup: world_size=%d, sp=%d, tp=%d",
+                world_size,
+                sp_world_size,
+                tp_world_size,
+            )
+
+        scm_preset = envs.SGLANG_CACHE_DIT_SCM_PRESET
+        scm_compute_bins = None
+        scm_cache_bins = None
+        if envs.SGLANG_CACHE_DIT_SCM_COMPUTE_BINS and envs.SGLANG_CACHE_DIT_SCM_CACHE_BINS:
+            try:
+                scm_compute_bins = [
+                    int(x.strip())
+                    for x in envs.SGLANG_CACHE_DIT_SCM_COMPUTE_BINS.split(",")
+                ]
+                scm_cache_bins = [
+                    int(x.strip())
+                    for x in envs.SGLANG_CACHE_DIT_SCM_CACHE_BINS.split(",")
+                ]
+            except ValueError as exc:
+                logger.warning("Failed to parse Cosmos3 SCM bins: %s", exc)
+                scm_preset = "none"
+
+        steps_computation_mask = get_scm_mask(
+            preset=scm_preset,
+            num_inference_steps=num_inference_steps,
+            compute_bins=scm_compute_bins,
+            cache_bins=scm_cache_bins,
+        )
+
+        config = CacheDitConfig(
+            enabled=True,
+            Fn_compute_blocks=envs.SGLANG_CACHE_DIT_FN,
+            Bn_compute_blocks=envs.SGLANG_CACHE_DIT_BN,
+            max_warmup_steps=envs.SGLANG_CACHE_DIT_WARMUP,
+            residual_diff_threshold=envs.SGLANG_CACHE_DIT_RDT,
+            max_continuous_cached_steps=envs.SGLANG_CACHE_DIT_MC,
+            enable_taylorseer=envs.SGLANG_CACHE_DIT_TAYLORSEER,
+            taylorseer_order=envs.SGLANG_CACHE_DIT_TS_ORDER,
+            num_inference_steps=num_inference_steps,
+            steps_computation_mask=steps_computation_mask,
+            steps_computation_policy=envs.SGLANG_CACHE_DIT_SCM_POLICY,
+        )
+        self.transformer = enable_cache_on_transformer(
+            self.transformer,
+            config,
+            model_name="cosmos3",
+            sp_group=sp_group,
+            tp_group=tp_group,
+        )
+        self._cache_dit_enabled = True
+        self._cached_num_steps = num_inference_steps
+        logger.info(
+            "Cosmos3 cache-dit enabled (steps=%d, Fn=%d, Bn=%d, rdt=%.3f, MC=%d)",
+            num_inference_steps,
+            envs.SGLANG_CACHE_DIT_FN,
+            envs.SGLANG_CACHE_DIT_BN,
+            envs.SGLANG_CACHE_DIT_RDT,
+            envs.SGLANG_CACHE_DIT_MC,
+        )
+
+    def _maybe_enable_request_acceleration(
+        self, num_inference_steps: int, batch: Req, server_args: ServerArgs
+    ) -> None:
+        install_cosmos3_pab(self.transformer)
+        self._maybe_enable_cache_dit(num_inference_steps, batch)
+        if server_args is not None:
+            self._maybe_enable_torch_compile(self.transformer, server_args)
 
     def verify_input(self, batch: Req, server_args: ServerArgs) -> VerificationResult:
         result = VerificationResult()
@@ -496,6 +620,7 @@ class Cosmos3DenoisingStage(PipelineStage):
         noisy_frame_mask: torch.Tensor | None = None,
         max_text_seq_len: int | None = None,
         current_timestep: int | None = None,
+        num_inference_steps: int | None = None,
     ) -> torch.Tensor:
         """Run transformer forward pass.
 
@@ -512,6 +637,13 @@ class Cosmos3DenoisingStage(PipelineStage):
         """
         if current_timestep is None:
             current_timestep = int(timestep.flatten()[0].item())
+        pab = getattr(self.transformer, "_cosmos3_pab", None)
+        if pab is not None:
+            pab.begin_step(
+                step=current_timestep,
+                num_inference_steps=num_inference_steps,
+                cache_key=cache_key,
+            )
         with set_forward_context(current_timestep=current_timestep, attn_metadata=None):
             return self.transformer(
                 hidden_states=latents,
@@ -523,6 +655,8 @@ class Cosmos3DenoisingStage(PipelineStage):
                 cache_key=cache_key,
                 noisy_frame_mask=noisy_frame_mask,
                 max_text_seq_len=max_text_seq_len,
+                current_step=current_timestep,
+                num_inference_steps=num_inference_steps,
             )
 
     def _manage_device_placement(self, server_args: ServerArgs):
@@ -573,6 +707,8 @@ class Cosmos3DenoisingStage(PipelineStage):
         guidance_interval = getattr(batch.sampling_params, "guidance_interval", None)
 
         do_cfg = guidance_scale > 1.0
+        num_inference_steps = len(timesteps)
+        self._maybe_enable_request_acceleration(num_inference_steps, batch, server_args)
 
         enable_cfg_parallel = server_args.enable_cfg_parallel and do_cfg
         cfg_rank = get_classifier_free_guidance_rank() if enable_cfg_parallel else 0
@@ -638,6 +774,7 @@ class Cosmos3DenoisingStage(PipelineStage):
                         cond_text_seq_len=batch.extra["cond_text_seq_len"],
                         uncond_text_seq_len=batch.extra["uncond_text_seq_len"],
                         current_timestep=i,
+                        num_inference_steps=num_inference_steps,
                     )
                 elif effective_scale == 1.0:
                     noise_pred = self._run_transformer(
@@ -651,6 +788,7 @@ class Cosmos3DenoisingStage(PipelineStage):
                         noisy_frame_mask=velocity_mask,
                         max_text_seq_len=batch.extra["cond_text_seq_len"],
                         current_timestep=i,
+                        num_inference_steps=num_inference_steps,
                     )
                 else:
                     noise_pred = self._predict_noise_cfg_batched(
@@ -669,6 +807,7 @@ class Cosmos3DenoisingStage(PipelineStage):
                             batch.extra["uncond_text_seq_len"],
                         ),
                         current_timestep=i,
+                        num_inference_steps=num_inference_steps,
                     )
             else:
                 noise_pred = self._run_transformer(
@@ -682,6 +821,7 @@ class Cosmos3DenoisingStage(PipelineStage):
                     noisy_frame_mask=velocity_mask,
                     max_text_seq_len=batch.extra["cond_text_seq_len"],
                     current_timestep=i,
+                    num_inference_steps=num_inference_steps,
                 )
 
             # I2V: zero-velocity at conditioned frames so the scheduler keeps
@@ -701,6 +841,12 @@ class Cosmos3DenoisingStage(PipelineStage):
                 latents[:, :, 0:1, :, :] = image_latent
 
         batch.latents = latents
+        teacache = getattr(self.transformer, "_cosmos3_teacache", None)
+        if teacache is not None:
+            self.log_info("Cosmos3 TeaCache stats: %s", teacache.stats_summary())
+        pab = getattr(self.transformer, "_cosmos3_pab", None)
+        if pab is not None:
+            self.log_info("Cosmos3 PAB stats: %s", pab.stats_summary())
         self.log_info("Denoising complete")
         return batch
 
@@ -718,6 +864,7 @@ class Cosmos3DenoisingStage(PipelineStage):
         noisy_frame_mask: torch.Tensor | None = None,
         max_text_seq_len: int | None = None,
         current_timestep: int | None = None,
+        num_inference_steps: int | None = None,
     ) -> torch.Tensor:
         """Run CFG by stacking both branches into a batch_size=2 forward.
 
@@ -746,6 +893,7 @@ class Cosmos3DenoisingStage(PipelineStage):
             noisy_frame_mask=mask_batched,
             max_text_seq_len=max_text_seq_len,
             current_timestep=current_timestep,
+            num_inference_steps=num_inference_steps,
         )
 
         noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2, dim=0)
@@ -770,6 +918,7 @@ class Cosmos3DenoisingStage(PipelineStage):
         cond_text_seq_len: int | None = None,
         uncond_text_seq_len: int | None = None,
         current_timestep: int | None = None,
+        num_inference_steps: int | None = None,
     ) -> torch.Tensor:
         """Run CFG with one branch per CFG rank, combined by all-reduce.
 
@@ -791,6 +940,7 @@ class Cosmos3DenoisingStage(PipelineStage):
                 noisy_frame_mask=noisy_frame_mask,
                 max_text_seq_len=cond_text_seq_len,
                 current_timestep=current_timestep,
+                num_inference_steps=num_inference_steps,
             )
             partial = guidance_scale * noise_pred
         else:
@@ -805,6 +955,7 @@ class Cosmos3DenoisingStage(PipelineStage):
                 noisy_frame_mask=noisy_frame_mask,
                 max_text_seq_len=uncond_text_seq_len,
                 current_timestep=current_timestep,
+                num_inference_steps=num_inference_steps,
             )
             partial = (1.0 - guidance_scale) * noise_pred
 

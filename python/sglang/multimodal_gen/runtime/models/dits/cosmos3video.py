@@ -37,6 +37,10 @@ from sglang.multimodal_gen.runtime.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from sglang.multimodal_gen.runtime.loader.utils import get_param_names_mapping
+from sglang.multimodal_gen.runtime.cache.cosmos3_teacache import (
+    Cosmos3TeaCacheCoordinator,
+    cosmos3_teacache_config_from_env,
+)
 from sglang.multimodal_gen.runtime.models.dits.base import CachableDiT
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.srt.utils import add_prefix
@@ -920,6 +924,19 @@ class Cosmos3OmniTransformer(CachableDiT):
         # prompts, avoiding recomputation on every denoising step
         self.cached_kv: dict[str, list[tuple[torch.Tensor, torch.Tensor]]] = {}
         self.cached_freqs_gen: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        teacache_config = cosmos3_teacache_config_from_env()
+        self._cosmos3_teacache: Cosmos3TeaCacheCoordinator | None = (
+            Cosmos3TeaCacheCoordinator(teacache_config)
+            if teacache_config.enabled
+            else None
+        )
+        if self._cosmos3_teacache is not None:
+            logger.info(
+                "Cosmos3 TeaCache enabled: threshold=%.4f start=%d max_hits=%d",
+                teacache_config.threshold,
+                teacache_config.start_step,
+                teacache_config.max_continuous_hits,
+            )
 
         self.__post_init__()
 
@@ -1031,6 +1048,13 @@ class Cosmos3OmniTransformer(CachableDiT):
             # Reset all caches
             self.cached_kv = {}
             self.cached_freqs_gen = {}
+            if self._cosmos3_teacache is not None:
+                self._cosmos3_teacache.reset()
+                self._cosmos3_teacache.reset_stats()
+            pab = getattr(self, "_cosmos3_pab", None)
+            if pab is not None:
+                pab.reset()
+                pab.reset_stats()
         else:
             # Reset specific cache
             if cache_key in self.cached_kv:
@@ -1058,6 +1082,8 @@ class Cosmos3OmniTransformer(CachableDiT):
         cache_key: str = "default",
         noisy_frame_mask: torch.Tensor | None = None,
         max_text_seq_len: int | None = None,
+        current_step: int | None = None,
+        num_inference_steps: int | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """Forward pass for denoising.
@@ -1182,28 +1208,51 @@ class Cosmos3OmniTransformer(CachableDiT):
         freqs_gen = self.cached_freqs_gen[cache_key]
         cos_gen, sin_gen = freqs_gen
 
-        # Run GEN layers. `residual` is threaded so each layer's
-        # input_layernorm and post_attention_layernorm can use the
-        # fused add+rmsnorm path instead of separate add + norm kernels.
-        cached_kv_for_key = self.cached_kv[cache_key]
-        residual: torch.Tensor | None = None
-        for i, layer in enumerate(self.gen_layers):
-            k_und, v_und = cached_kv_for_key[i]
-            hidden_gen, residual = layer(
-                hidden_gen,
-                k_und,
-                v_und,
-                cos_gen,
-                sin_gen,
-                residual=residual,
+        teacache_decision = None
+        original_hidden_gen = hidden_gen
+        if self._cosmos3_teacache is not None:
+            teacache_decision = self._cosmos3_teacache.lookup(
+                hidden_gen=hidden_gen,
+                cache_key=cache_key,
+                step=int(current_step or 0),
+                num_inference_steps=num_inference_steps,
+                noisy_frame_mask_present=noisy_frame_mask is not None,
+                sequence_shard_enabled=sequence_shard_enabled,
             )
+            if teacache_decision.should_skip:
+                hidden_gen = teacache_decision.hidden_gen
 
-        # Collapse the trailing residual carry. RMSNorm and the linear
-        # projection that follow are per-token, so we run them on the
-        # local shard and only gather the (much smaller) patch-space
-        # output. With patch_latent_dim ~= hidden_size / 21 for cosmos3,
-        # this cuts the post-loop SP collective bandwidth ~21x.
-        hidden_gen = hidden_gen + residual
+        if teacache_decision is None or not teacache_decision.should_skip:
+            # Run GEN layers. `residual` is threaded so each layer's
+            # input_layernorm and post_attention_layernorm can use the
+            # fused add+rmsnorm path instead of separate add + norm kernels.
+            cached_kv_for_key = self.cached_kv[cache_key]
+            residual: torch.Tensor | None = None
+            for i, layer in enumerate(self.gen_layers):
+                k_und, v_und = cached_kv_for_key[i]
+                hidden_gen, residual = layer(
+                    hidden_gen,
+                    k_und,
+                    v_und,
+                    cos_gen,
+                    sin_gen,
+                    residual=residual,
+                )
+
+            # Collapse the trailing residual carry. RMSNorm and the linear
+            # projection that follow are per-token, so we run them on the
+            # local shard and only gather the (much smaller) patch-space
+            # output. With patch_latent_dim ~= hidden_size / 21 for cosmos3,
+            # this cuts the post-loop SP collective bandwidth ~21x.
+            hidden_gen = hidden_gen + residual
+            if self._cosmos3_teacache is not None:
+                self._cosmos3_teacache.store(
+                    teacache_decision,
+                    original_hidden_gen=original_hidden_gen,
+                    hidden_gen=hidden_gen,
+                    step=int(current_step or 0),
+                )
+
         hidden_gen = self.norm_moe_gen(hidden_gen)
         output, _ = self.proj_out(hidden_gen)
 

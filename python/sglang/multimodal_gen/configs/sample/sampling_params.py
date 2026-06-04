@@ -942,6 +942,36 @@ class SamplingParams:
             help="Enable sequence dimension shard with sequence parallelism.",
         )
         add_argument(
+            "--max-sequence-length",
+            type=int,
+            help="Maximum text token length for models that tokenize inside the pipeline.",
+        )
+        add_argument(
+            "--flow-shift",
+            type=float,
+            help="Override scheduler flow shift for models that expose this knob.",
+        )
+        add_argument(
+            "--use-duration-template",
+            action=StoreBoolean,
+            help="Enable or disable model-specific prompt duration templating.",
+        )
+        add_argument(
+            "--use-resolution-template",
+            action=StoreBoolean,
+            help="Enable or disable model-specific prompt resolution templating.",
+        )
+        add_argument(
+            "--use-system-prompt",
+            action=StoreBoolean,
+            help="Enable or disable model-specific system prompt wrapping.",
+        )
+        add_argument(
+            "--use-guardrails",
+            action=StoreBoolean,
+            help="Enable or disable model-specific guardrails for a request.",
+        )
+        add_argument(
             "--enable-frame-interpolation",
             action="store_true",
             help="Enable post-generation frame interpolation using RIFE 4.22.lite.",
