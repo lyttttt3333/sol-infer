@@ -23,6 +23,7 @@ WARMUP_STEPS="${WARMUP_STEPS:-1}"
 FORCE="${FORCE:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 ALLOW_PARTIAL="${ALLOW_PARTIAL:-0}"
+PROMPT_COUNT="${PROMPT_COUNT:-2}"
 COSMOS3_16B_MODEL_PATH="${COSMOS3_16B_MODEL_PATH:-nvidia/Cosmos3-Nano}"
 COSMOS3_64B_MODEL_PATH="${COSMOS3_64B_MODEL_PATH:-nvidia/Cosmos3-Super}"
 COSMOS3_16B_NUM_GPUS="${COSMOS3_16B_NUM_GPUS:-1}"
@@ -87,6 +88,10 @@ label_for_variant() {
     teacache_c04_s5) echo "TeaCache t0.04 start5" ;;
     teacache_c06_s5) echo "TeaCache t0.06 start5" ;;
     teacache_c08_s5) echo "TeaCache t0.08 start5" ;;
+    teacache_c12_s5) echo "TeaCache t0.12 start5" ;;
+    teacache_c16_s5) echo "TeaCache t0.16 start5" ;;
+    teacache_c20_s5) echo "TeaCache t0.20 start5" ;;
+    teacache_c30_s5) echo "TeaCache t0.30 start5" ;;
     pab_cross2) echo "PAB cross window2" ;;
     pab_cross3) echo "PAB cross window3" ;;
     dbcache_mild) echo "DBCache mild" ;;
@@ -144,6 +149,34 @@ configure_variant_env() {
       export SGLANG_COSMOS3_TEACACHE_THRESH=0.08
       export SGLANG_COSMOS3_TEACACHE_START=5
       export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+      ;;
+    teacache_c12_s5)
+      export SGLANG_COSMOS3_TEACACHE_ENABLED=1
+      export SGLANG_COSMOS3_TEACACHE_THRESH=0.12
+      export SGLANG_COSMOS3_TEACACHE_START=5
+      export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+      export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1
+      ;;
+    teacache_c16_s5)
+      export SGLANG_COSMOS3_TEACACHE_ENABLED=1
+      export SGLANG_COSMOS3_TEACACHE_THRESH=0.16
+      export SGLANG_COSMOS3_TEACACHE_START=5
+      export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+      export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1
+      ;;
+    teacache_c20_s5)
+      export SGLANG_COSMOS3_TEACACHE_ENABLED=1
+      export SGLANG_COSMOS3_TEACACHE_THRESH=0.20
+      export SGLANG_COSMOS3_TEACACHE_START=5
+      export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+      export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1
+      ;;
+    teacache_c30_s5)
+      export SGLANG_COSMOS3_TEACACHE_ENABLED=1
+      export SGLANG_COSMOS3_TEACACHE_THRESH=0.30
+      export SGLANG_COSMOS3_TEACACHE_START=5
+      export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+      export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1
       ;;
     pab_cross2)
       export SGLANG_COSMOS3_PAB_ENABLED=1
@@ -263,6 +296,9 @@ EOF
 failed=0
 for model_size in "${model_sizes[@]}"; do
   for prompt_idx in "${!prompts[@]}"; do
+    if (( prompt_idx >= PROMPT_COUNT )); then
+      continue
+    fi
     for variant in "${variants[@]}"; do
       if ! run_one "$model_size" "$prompt_idx" "$variant"; then
         failed=1
@@ -292,7 +328,7 @@ if [[ "$DRY_RUN" != "1" ]]; then
     --root "$ROOT" \
     --model-sizes "$MODEL_SIZES_TEXT" \
     --variants "$VARIANTS_TEXT" \
-    --prompt-count "${#prompts[@]}"
+    --prompt-count "$PROMPT_COUNT"
 fi
 
 if [[ "$failed" != "0" ]]; then

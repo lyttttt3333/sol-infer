@@ -238,6 +238,16 @@ class Cosmos3TeaCacheCoordinator:
         rel_l1 = self._rel_l1(feature, entry.previous_feature)
         accumulated = entry.accumulated_distance + rel_l1
         if accumulated >= self.config.threshold:
+            if self.config.log_decisions:
+                logger.info(
+                    "Cosmos3 TeaCache recompute step=%s key=%s rel_l1=%.6f "
+                    "accum=%.6f threshold=%.6f",
+                    step,
+                    cache_key,
+                    rel_l1,
+                    accumulated,
+                    self.config.threshold,
+                )
             entry.accumulated_distance = 0.0
             entry.continuous_hits = 0
             stats.computes += 1
