@@ -23,7 +23,13 @@ WARMUP_STEPS="${WARMUP_STEPS:-1}"
 FORCE="${FORCE:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 ALLOW_PARTIAL="${ALLOW_PARTIAL:-0}"
+SCHEDULER_PORT_BASE="${SCHEDULER_PORT_BASE:-5600}"
+MASTER_PORT_BASE="${MASTER_PORT_BASE:-31000}"
 PROMPT_COUNT="${PROMPT_COUNT:-2}"
+PROMPT_START_INDEX="${PROMPT_START_INDEX:-0}"
+PROMPT_END_INDEX="${PROMPT_END_INDEX:-$((PROMPT_COUNT - 1))}"
+MAKE_COMPARE="${MAKE_COMPARE:-1}"
+MAKE_REPORT="${MAKE_REPORT:-1}"
 COSMOS3_16B_MODEL_PATH="${COSMOS3_16B_MODEL_PATH:-nvidia/Cosmos3-Nano}"
 COSMOS3_64B_MODEL_PATH="${COSMOS3_64B_MODEL_PATH:-nvidia/Cosmos3-Super}"
 COSMOS3_16B_NUM_GPUS="${COSMOS3_16B_NUM_GPUS:-1}"
@@ -64,6 +70,14 @@ read -r -a variants <<< "$VARIANTS_TEXT"
 prompts=(
   "${PROMPT_0:-A documentary video of an elderly botanist carefully watering orchids inside a glass greenhouse, morning sunlight, realistic hands, gentle camera movement, natural colors}"
   "${PROMPT_1:-A red fox running across a snowy forest trail at sunrise, powder snow kicked up by its paws, realistic fur motion, smooth tracking shot, cinematic natural light}"
+  "${PROMPT_2:-A street food vendor flipping scallion pancakes on a busy night market grill, steam rising, realistic hands, handheld documentary camera, neon signs}"
+  "${PROMPT_3:-A golden retriever jumping into a clear mountain lake, water splashing in slow motion, wet fur detail, bright natural daylight}"
+  "${PROMPT_4:-A young violinist practicing alone in a sunlit apartment, close-up bow movement, dust floating in the light, realistic fingers}"
+  "${PROMPT_5:-A hummingbird hovering beside red flowers in a backyard garden, fast wing motion, shallow depth of field, natural colors}"
+  "${PROMPT_6:-A chef slicing tomatoes and herbs on a wooden cutting board, sharp knife movement, realistic kitchen lighting, close-up food texture}"
+  "${PROMPT_7:-A horse galloping along a beach at sunset, wet sand reflections, flowing mane, smooth tracking shot, cinematic realism}"
+  "${PROMPT_8:-A child in a yellow raincoat walking through shallow puddles after rain, city sidewalk reflections, gentle camera movement, realistic motion}"
+  "${PROMPT_9:-A tabby cat stretching on a windowsill beside houseplants, afternoon sunlight, soft fur detail, calm indoor camera movement}"
 )
 
 model_path_for_size() {
@@ -287,6 +301,24 @@ run_one() {
   local semantics_json="$out_dir/semantics.json"
   local log_file="$ROOT/logs/${model_size}_prompt${prompt_idx}_${variant}.log"
   local prompt="${prompts[$prompt_idx]}"
+  local model_slot=0
+  local variant_slot=0
+  local i
+  for i in "${!model_sizes[@]}"; do
+    if [[ "${model_sizes[$i]}" == "$model_size" ]]; then
+      model_slot="$i"
+      break
+    fi
+  done
+  for i in "${!variants[@]}"; do
+    if [[ "${variants[$i]}" == "$variant" ]]; then
+      variant_slot="$i"
+      break
+    fi
+  done
+  local port_offset=$(( model_slot * 10000 + prompt_idx * 100 + variant_slot * 10 ))
+  local scheduler_port=$(( SCHEDULER_PORT_BASE + port_offset ))
+  local master_port=$(( MASTER_PORT_BASE + port_offset ))
 
   if [[ "$FORCE" != "1" && -s "$out_video" && -s "$perf_json" ]]; then
     echo "[skip] existing $model_size prompt=$prompt_idx variant=$variant"
@@ -314,7 +346,9 @@ run_one() {
   "guidance_scale": $GUIDANCE_SCALE,
   "flow_shift": $FLOW_SHIFT,
   "max_sequence_length": $MAX_SEQUENCE_LENGTH,
-  "seed": $SEED
+  "seed": $SEED,
+  "scheduler_port": $scheduler_port,
+  "master_port": $master_port
 }
 EOF
 
@@ -336,12 +370,14 @@ EOF
     --seed "$SEED"
     --warmup "$WARMUP"
     --warmup-steps "$WARMUP_STEPS"
+    --scheduler-port "$scheduler_port"
+    --master-port "$master_port"
     --enable-sequence-shard true
     --output-file-path "$out_video"
     --perf-dump-path "$perf_json"
   )
 
-  echo "[run] model=$model_size prompt=$prompt_idx variant=$variant gpus=$num_gpus"
+  echo "[run] model=$model_size prompt=$prompt_idx variant=$variant gpus=$num_gpus scheduler_port=$scheduler_port master_port=$master_port"
   if [[ "$DRY_RUN" == "1" ]]; then
     printf '%q ' "${cmd[@]}"
     printf '\n'
@@ -360,6 +396,9 @@ for model_size in "${model_sizes[@]}"; do
     if (( prompt_idx >= PROMPT_COUNT )); then
       continue
     fi
+    if (( prompt_idx < PROMPT_START_INDEX || prompt_idx > PROMPT_END_INDEX )); then
+      continue
+    fi
     for variant in "${variants[@]}"; do
       if ! run_one "$model_size" "$prompt_idx" "$variant"; then
         failed=1
@@ -376,7 +415,7 @@ for model_size in "${model_sizes[@]}"; do
         compare_args+=(--item "$(label_for_variant "$variant")=$video")
       fi
     done
-    if [[ "$DRY_RUN" != "1" && ${#compare_args[@]} -ge 4 ]]; then
+    if [[ "$DRY_RUN" != "1" && "$MAKE_COMPARE" == "1" && ${#compare_args[@]} -ge 4 ]]; then
       "$PYTHON_BIN" scripts/make_multiway_video.py "${compare_args[@]}" \
         --cols "${COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
         --out "$ROOT/$model_size/prompt_${prompt_idx}/compare.mp4"
@@ -384,7 +423,7 @@ for model_size in "${model_sizes[@]}"; do
   done
 done
 
-if [[ "$DRY_RUN" != "1" ]]; then
+if [[ "$DRY_RUN" != "1" && "$MAKE_REPORT" == "1" ]]; then
   "$PYTHON_BIN" scripts/make_cosmos3_cache_report.py \
     --root "$ROOT" \
     --model-sizes "$MODEL_SIZES_TEXT" \

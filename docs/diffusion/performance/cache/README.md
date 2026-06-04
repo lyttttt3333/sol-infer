@@ -74,6 +74,13 @@ Runtime changes:
 - Added Cosmos3 cache benchmark and report scripts:
   - `scripts/run_cosmos3_cache_matrix.sh`
   - `scripts/make_cosmos3_cache_report.py`
+- `scripts/run_cosmos3_cache_matrix.sh` now supports prompt index sharding
+  (`PROMPT_START_INDEX` / `PROMPT_END_INDEX`), optional compare/report stages,
+  and per-run `scheduler_port` / `master_port` derivation so concurrent Slurm
+  array tasks do not collide on SG-Lang's local distributed port.
+- `scripts/make_cosmos3_cache_report.py` now computes per-video PSNR against
+  the same-prompt baseline by decoding both MP4s frame by frame. The report
+  includes per-sample PSNR plus average-by-variant speed/PSNR tables.
 
 Cosmos3 TeaCache uses the same high-level decision rule as LTX2: compare the
 current modulated transformer input with the previous computed one, accumulate a
@@ -209,6 +216,98 @@ Recommendation from this run:
   `1.39x` denoise speedup and `1.43x` total speedup with fewer skipped steps.
 - The old start5 result should stay marked rejected because it was produced by
   the pre-fix residual baseline bug.
+
+### Cosmos3 16B 10-sample TeaCache boundary and PSNR sweep
+
+Run IDs:
+
+```text
+Generation array: 4597902
+Report job: 4597923
+```
+
+Artifact roots:
+
+```text
+Remote:
+/lustre/fsw/portfolios/nvr/projects/nvr_elm_llm/users/junsongc/staging/sol-ltx-infer-cosmos3-cache/outputs/cosmos3-teacache-16b-boundary10-portfix-nrt
+
+Local quick-look artifacts:
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-boundary10-portfix-nrt/benchmark_report.html
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-boundary10-portfix-nrt/benchmark_summary.json
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-boundary10-portfix-nrt/benchmark_summary.md
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-boundary10-portfix-nrt/16b/prompt_0/compare.mp4
+...
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-boundary10-portfix-nrt/16b/prompt_9/compare.mp4
+```
+
+Run setup:
+
+- Model: `nvidia/Cosmos3-Nano` (`16b` in benchmark labels).
+- Resolution and length: `832x480`, `121` frames, `24 FPS`, about 5 seconds.
+- Denoising: `35` steps, CFG `4.0`, flow shift `10.0`, seed `42`.
+- Samples: 10 prompts covering people, animals, food, and street scenes.
+- PSNR: decoded MP4 frames compared against the same-prompt baseline.
+
+Prompt themes:
+
+| Prompt | Theme |
+|---:|---|
+| 0 | Elderly botanist watering orchids in a greenhouse. |
+| 1 | Red fox running on a snowy forest trail. |
+| 2 | Street food vendor flipping scallion pancakes. |
+| 3 | Golden retriever jumping into a mountain lake. |
+| 4 | Young violinist practicing in a sunlit apartment. |
+| 5 | Hummingbird hovering beside red flowers. |
+| 6 | Chef slicing tomatoes and herbs. |
+| 7 | Horse galloping along a beach at sunset. |
+| 8 | Child in a yellow raincoat walking through puddles. |
+| 9 | Tabby cat stretching on a windowsill. |
+
+10-sample average results:
+
+| Variant | Skipped steps per sample | Total x | Denoise x | Mean PSNR dB | Worst min-frame PSNR dB | Mean abs diff | Visual readout |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Baseline | 0 | 1.000 | 1.000 | - | - | - | Reference. |
+| TeaCache t1.15/start16/max2 | 12 | 1.490 | 1.496 | 27.24 | 21.49 | 6.80 | Best usable setting in this sweep. Generally close to baseline in sampled frames. |
+| TeaCache t1.15/start10/max3 | 18 | 1.881 | 1.940 | 22.72 | 16.73 | 12.28 | Faster but visibly drifts on motion-heavy prompts; borderline. |
+| TeaCache t1.30/start8/max4 | 20 | 2.054 | 2.144 | 21.21 | 16.64 | 15.35 | Clear quality drop on animal/water and person prompts. |
+| TeaCache t1.50/start5/max8 | 25 | 2.606 | 2.841 | 18.88 | 15.02 | 22.21 | Not acceptable; blur and subject drift are obvious. |
+| TeaCache t2.00/start0/max8 | 29 | 3.402 | 3.930 | 18.28 | 13.84 | 24.22 | Very aggressive; only a few denoise steps compute. Usually broken visually. |
+| TeaCache t2.50/start0/max10 | 30 | 3.661 | 4.331 | 17.43 | 13.58 | 27.01 | Broken visually. |
+| TeaCache t3.00/start0/max12 | 30 | 3.698 | 4.368 | 16.44 | 13.54 | 30.65 | Broken visually; little speed gain over t2.50. |
+
+Skip examples:
+
+```text
+t1.15/start16/max2: [16,17,19,20,22,23,25,26,28,29,31,33]
+t1.15/start10/max3: [10,11,12,14,15,16,18,19,20,22,23,24,26,27,29,30,31,33]
+t1.30/start8/max4:  [8,9,10,11,13,14,15,16,18,19,20,21,23,24,25,26,29,30,31,32]
+t1.50/start5/max8:  [5,6,7,8,9,10,11,12,14,15,16,17,18,19,20,21,23,24,25,27,28,29,30,32,33]
+t2.00/start0/max8:  [1,2,3,4,5,6,7,8,10,11,12,13,14,15,16,17,19,20,21,22,23,24,25,27,28,29,30,31,33]
+```
+
+Visual spot checks from the local `compare_prompt*_mid.jpg` frames:
+
+- Prompt 0 (greenhouse): `t1.15/start16/max2` remains close to baseline;
+  `t1.15/start10/max3` has visible pose/detail drift; `t1.50+` is blurred and
+  no longer acceptable.
+- Prompt 3 (golden retriever in water): `t1.15/start16/max2` preserves the
+  subject and splash best; `t1.15/start10/max3` already shifts action timing;
+  `t1.30+` degrades the dog/water structure.
+- Prompt 8 (raincoat/puddles): `t1.15/start16/max2` is acceptable; `t1.50+`
+  loses scene structure and becomes too blurry.
+
+Recommendation from the 10-sample sweep:
+
+- Keep `TeaCache t1.15/start16/max2` as the quality-preserving 16B setting:
+  `1.49x` total and `1.50x` denoise speedup with the best PSNR.
+- Treat `TeaCache t1.15/start10/max3` as a speed-first candidate only after
+  manual visual approval: it reaches `1.88x` total and `1.94x` denoise speedup,
+  but visual drift is already visible in several prompts.
+- Reject `t1.30/start8/max4` and more aggressive settings for general use in
+  the current implementation. They are useful boundary data, but the PSNR and
+  sampled frames show unacceptable degradation.
 
 ## TeaCache mechanism
 
