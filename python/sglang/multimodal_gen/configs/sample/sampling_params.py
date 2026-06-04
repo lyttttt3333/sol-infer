@@ -947,11 +947,6 @@ class SamplingParams:
             help="Maximum text token length for models that tokenize inside the pipeline.",
         )
         add_argument(
-            "--flow-shift",
-            type=float,
-            help="Override scheduler flow shift for models that expose this knob.",
-        )
-        add_argument(
             "--use-duration-template",
             action=StoreBoolean,
             help="Enable or disable model-specific prompt duration templating.",
