@@ -15,6 +15,7 @@ from sglang.multimodal_gen.runtime.cache.cache_dit_integration import (
     enable_cache_on_dual_transformer,
     enable_cache_on_transformer,
     get_scm_mask,
+    refresh_context_on_transformer,
 )
 from sglang.multimodal_gen.runtime.cache.teacache import TeaCacheContext, TeaCacheMixin
 
@@ -27,4 +28,5 @@ __all__ = [
     "enable_cache_on_transformer",
     "enable_cache_on_dual_transformer",
     "get_scm_mask",
+    "refresh_context_on_transformer",
 ]
