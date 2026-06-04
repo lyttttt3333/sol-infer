@@ -21,29 +21,58 @@ from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
 
-import cache_dit
-from cache_dit import (
-    BlockAdapter,
-    DBCacheConfig,
-    ForwardPattern,
-    ParamsModifier,
-    TaylorSeerCalibratorConfig,
-    steps_mask,
-)
-from cache_dit.caching.block_adapters import BlockAdapterRegister
-from cache_dit.parallelism import ParallelismBackend, ParallelismConfig
+try:
+    import cache_dit
+    from cache_dit import (
+        BlockAdapter,
+        DBCacheConfig,
+        ForwardPattern,
+        ParamsModifier,
+        TaylorSeerCalibratorConfig,
+        steps_mask,
+    )
+    from cache_dit.caching.block_adapters import BlockAdapterRegister
+    from cache_dit.parallelism import ParallelismBackend, ParallelismConfig
+
+    _CACHE_DIT_AVAILABLE = True
+    _CACHE_DIT_IMPORT_ERROR = None
+except ImportError as exc:
+    cache_dit = None
+    BlockAdapter = None
+    DBCacheConfig = None
+    ForwardPattern = None
+    ParamsModifier = None
+    TaylorSeerCalibratorConfig = None
+    steps_mask = None
+    BlockAdapterRegister = None
+    ParallelismBackend = None
+    ParallelismConfig = None
+    _CACHE_DIT_AVAILABLE = False
+    _CACHE_DIT_IMPORT_ERROR = exc
 
 from sglang.multimodal_gen.runtime.distributed.parallel_state import get_dit_group
 
-# Side-effect import: register the SGLang-owned LTX2 BlockAdapter before
-# cache-dit checks BlockAdapterRegister support.
-from sglang.multimodal_gen.runtime.cache import cosmos3_block_adapter  # noqa: F401
-from sglang.multimodal_gen.runtime.cache import ltx2_block_adapter  # noqa: F401
+if _CACHE_DIT_AVAILABLE:
+    # Side-effect import: register SGLang-owned BlockAdapters before cache-dit
+    # checks BlockAdapterRegister support.
+    from sglang.multimodal_gen.runtime.cache import cosmos3_block_adapter  # noqa: F401
+    from sglang.multimodal_gen.runtime.cache import ltx2_block_adapter  # noqa: F401
 
 _original_similarity = None
 
 
+def _require_cache_dit() -> None:
+    if _CACHE_DIT_AVAILABLE:
+        return
+    raise ImportError(
+        "cache-dit is required when SGLANG_CACHE_DIT_ENABLED or related "
+        "DBCache/TaylorSeer options are enabled. Install the cache_dit package "
+        "or disable cache-dit acceleration."
+    ) from _CACHE_DIT_IMPORT_ERROR
+
+
 def _patch_cache_dit_similarity():
+    _require_cache_dit()
     from cache_dit.caching.cache_contexts import cache_manager
 
     global _original_similarity
@@ -113,6 +142,7 @@ def _build_parallelism_config(
 ):
     if sp_group is None and tp_group is None:
         return None
+    _require_cache_dit()
 
     ulysses_size = None
     ring_size = None
@@ -162,6 +192,7 @@ def get_scm_mask(
     """
     if preset == "none" and not (compute_bins and cache_bins):
         return None
+    _require_cache_dit()
 
     # Use cache-dit's steps_mask() directly
     mask = steps_mask(
@@ -247,6 +278,7 @@ def enable_cache_on_transformer(
     """
     if not config.enabled:
         return transformer
+    _require_cache_dit()
 
     if config.num_inference_steps is None:
         raise ValueError(
@@ -362,6 +394,10 @@ def enable_cache_on_dual_transformer(
         sp_group: Sequence parallel process group (for Ulysses/Ring).
         tp_group: Tensor parallel process group.
     """
+    if not primary_config.enabled:
+        return transformer, transformer_2
+    _require_cache_dit()
+
     _supported_dual_transformer_models = [
         "wan2.2",  # Currently, only Wan2.2 will run into dual-transformer case
     ]
@@ -370,9 +406,6 @@ def enable_cache_on_dual_transformer(
             f"Dual-transformer cache-dit is only supported for "
             f"{_supported_dual_transformer_models}, got {model_name}."
         )
-
-    if not primary_config.enabled:
-        return transformer, transformer_2
 
     if primary_config.num_inference_steps is None:
         raise ValueError(
@@ -536,6 +569,7 @@ def refresh_context_on_transformer(
     verbose: bool = False,
 ) -> None:
     """Refresh cache-dit context for transformer."""
+    _require_cache_dit()
     steps_computation_mask = None
     if scm_preset is not None:
         steps_computation_mask = cache_dit.steps_mask(
@@ -562,6 +596,7 @@ def refresh_context_on_dual_transformer(
     verbose: bool = False,
 ) -> None:
     """Refresh cache-dit context for dual transformers."""
+    _require_cache_dit()
     high_noise_steps_computation_mask = None
     low_noise_steps_computation_mask = None
     if scm_preset is not None:
