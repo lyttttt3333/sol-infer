@@ -83,6 +83,15 @@ num_gpus_for_size() {
 }
 
 label_for_variant() {
+  if [[ "$1" =~ ^teacache_c([0-9]+)_s([0-9]+)(_m([0-9]+))?$ ]]; then
+    local threshold_code="${BASH_REMATCH[1]}"
+    local start_step="${BASH_REMATCH[2]}"
+    local max_hits="${BASH_REMATCH[4]:-1}"
+    local threshold
+    threshold="$(awk -v code="$threshold_code" 'BEGIN { printf "%.2f", code / 100 }')"
+    echo "TeaCache t${threshold} start${start_step} max${max_hits}"
+    return
+  fi
   case "$1" in
     baseline) echo "Baseline" ;;
     teacache_c04_s5) echo "TeaCache t0.04 start5" ;;
@@ -129,6 +138,23 @@ clear_cache_env() {
   export SGLANG_CACHE_DIT_SCM_PRESET=none
   unset SGLANG_CACHE_DIT_SCM_COMPUTE_BINS
   unset SGLANG_CACHE_DIT_SCM_CACHE_BINS
+}
+
+configure_dynamic_teacache_variant_env() {
+  if [[ "$1" =~ ^teacache_c([0-9]+)_s([0-9]+)(_m([0-9]+))?$ ]]; then
+    local threshold_code="${BASH_REMATCH[1]}"
+    local start_step="${BASH_REMATCH[2]}"
+    local max_hits="${BASH_REMATCH[4]:-1}"
+    local threshold
+    threshold="$(awk -v code="$threshold_code" 'BEGIN { printf "%.2f", code / 100 }')"
+    export SGLANG_COSMOS3_TEACACHE_ENABLED=1
+    export SGLANG_COSMOS3_TEACACHE_THRESH="$threshold"
+    export SGLANG_COSMOS3_TEACACHE_START="$start_step"
+    export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS="$max_hits"
+    export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1
+    return 0
+  fi
+  return 1
 }
 
 configure_variant_env() {
@@ -237,6 +263,9 @@ configure_variant_env() {
       export SGLANG_CACHE_DIT_MC=2
       ;;
     *)
+      if configure_dynamic_teacache_variant_env "$1"; then
+        return
+      fi
       echo "[error] unknown variant: $1" >&2
       exit 2
       ;;

@@ -77,6 +77,12 @@ def _summarize_pab(stats: dict[str, Any] | None) -> str:
 
 
 def _variant_label(variant: str) -> str:
+    match = re.fullmatch(r"teacache_c([0-9]+)_s([0-9]+)(?:_m([0-9]+))?", variant)
+    if match:
+        threshold = int(match.group(1)) / 100.0
+        start = int(match.group(2))
+        max_hits = int(match.group(3) or 1)
+        return f"TeaCache t{threshold:.2f} start{start} max{max_hits}"
     return {
         "baseline": "Baseline",
         "teacache_c04_s5": "TeaCache t0.04 start5",
