@@ -1209,7 +1209,7 @@ class Cosmos3OmniTransformer(CachableDiT):
         cos_gen, sin_gen = freqs_gen
 
         teacache_decision = None
-        original_hidden_gen = hidden_gen
+        original_hidden_gen = None
         if self._cosmos3_teacache is not None:
             teacache_decision = self._cosmos3_teacache.lookup(
                 hidden_gen=hidden_gen,
@@ -1221,6 +1221,11 @@ class Cosmos3OmniTransformer(CachableDiT):
             )
             if teacache_decision.should_skip:
                 hidden_gen = teacache_decision.hidden_gen
+            else:
+                # GEN layers use fused add+rmsnorm kernels that mutate the
+                # residual input in place. Keep an immutable baseline for the
+                # TeaCache delta.
+                original_hidden_gen = hidden_gen.clone()
 
         if teacache_decision is None or not teacache_decision.should_skip:
             # Run GEN layers. `residual` is threaded so each layer's
@@ -1245,7 +1250,7 @@ class Cosmos3OmniTransformer(CachableDiT):
             # output. With patch_latent_dim ~= hidden_size / 21 for cosmos3,
             # this cuts the post-loop SP collective bandwidth ~21x.
             hidden_gen = hidden_gen + residual
-            if self._cosmos3_teacache is not None:
+            if self._cosmos3_teacache is not None and original_hidden_gen is not None:
                 self._cosmos3_teacache.store(
                     teacache_decision,
                     original_hidden_gen=original_hidden_gen,

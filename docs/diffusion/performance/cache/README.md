@@ -148,6 +148,68 @@ Readout:
   Cosmos3 TeaCache correctness issue to fix before increasing skip count or
   treating the speedup as usable.
 
+Follow-up fix:
+
+The visual failure was a Cosmos3 implementation bug, not an inherent TeaCache
+threshold problem. The original code kept `original_hidden_gen = hidden_gen`
+before running the GEN layer stack. Cosmos3 GEN layers use the fused
+add+rmsnorm path, and that CUDA path mutates the residual tensor in place when
+`residual` is provided. Because `original_hidden_gen` was only a reference, the
+stored TeaCache residual became:
+
+```text
+hidden_after_gen_layers - mutated_hidden_before_gen_layers
+```
+
+instead of the intended:
+
+```text
+hidden_after_gen_layers - original_hidden_before_gen_layers
+```
+
+The fix is to clone the GEN input on TeaCache compute steps before entering the
+GEN layers, and use that immutable copy as the residual replay baseline.
+
+Completed clone-fix 16B run:
+
+```text
+Remote:
+/lustre/fsw/portfolios/nvr/projects/nvr_elm_llm/users/junsongc/staging/sol-ltx-infer-cosmos3-cache/outputs/cosmos3-teacache-16b-clonefix480-nrt-4596583
+
+Local quick-look artifacts:
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-clonefix480-nrt-4596583/compare.mp4
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-clonefix480-nrt-4596583/benchmark_report.html
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-clonefix480-nrt-4596583/compare_first_frame.png
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-clonefix480-nrt-4596583/compare_mid_frame.png
+/Users/junsongc/Desktop/s3/cosmos3-teacache-16b-clonefix480-nrt-4596583/compare_late_frame.png
+```
+
+Run setup:
+
+- Model: `nvidia/Cosmos3-Nano` (`16b` in the local benchmark labels).
+- Prompt: elderly botanist watering orchids in a glass greenhouse.
+- Resolution and length: `832x480`, `121` frames, `24 FPS`, 5 seconds.
+- Steps: `35`, CFG `4.0`, flow shift `10.0`, seed `42`.
+
+16B prompt-0 timing after the clone fix:
+
+| Variant | Total s | Total x | Denoise s | Denoise x | Hits/computes | Skipped steps | Visual readout |
+|---|---:|---:|---:|---:|---|---|---|
+| Baseline | 45.277 | 1.000 | 40.662 | 1.000 | - | - | Normal greenhouse/botanist output. |
+| TeaCache t1.15/start16/max2 | 28.329 | 1.598 | 25.730 | 1.580 | 12/6 | `16,17,19,20,22,23,25,26,28,29,31,33` | Visually usable. No gray fog/noise overlay in first, middle, or late frames. |
+| TeaCache t1.15/start20/max2 | 31.759 | 1.426 | 29.168 | 1.394 | 9/5 | `20,21,23,24,26,27,29,30,32` | Visually usable and more conservative than start16. |
+| TeaCache t1.30/start20/max2 | 31.164 | 1.453 | 28.547 | 1.424 | 9/5 | `20,21,23,24,26,27,29,30,32` | Visually usable; same skip pattern as t1.15/start20 in this prompt. |
+
+Recommendation from this run:
+
+- Use `TeaCache t1.15/start16/max2` when the goal is strongest 16B speedup on
+  this setup; it reached `1.58x` denoise speedup and `1.60x` total generation
+  speedup.
+- Use `TeaCache t1.15/start20/max2` as a conservative fallback; it still reached
+  `1.39x` denoise speedup and `1.43x` total speedup with fewer skipped steps.
+- The old start5 result should stay marked rejected because it was produced by
+  the pre-fix residual baseline bug.
+
 ## TeaCache mechanism
 
 For LTX-2.3, TeaCache is stage/pass/shape keyed residual replay. The runtime
