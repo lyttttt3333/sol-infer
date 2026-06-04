@@ -92,6 +92,10 @@ label_for_variant() {
     teacache_c16_s5) echo "TeaCache t0.16 start5" ;;
     teacache_c20_s5) echo "TeaCache t0.20 start5" ;;
     teacache_c30_s5) echo "TeaCache t0.30 start5" ;;
+    teacache_c105_s5) echo "TeaCache t1.05 start5" ;;
+    teacache_c110_s5) echo "TeaCache t1.10 start5" ;;
+    teacache_c115_s5) echo "TeaCache t1.15 start5" ;;
+    teacache_c120_s5) echo "TeaCache t1.20 start5" ;;
     pab_cross2) echo "PAB cross window2" ;;
     pab_cross3) echo "PAB cross window3" ;;
     dbcache_mild) echo "DBCache mild" ;;
@@ -174,6 +178,34 @@ configure_variant_env() {
     teacache_c30_s5)
       export SGLANG_COSMOS3_TEACACHE_ENABLED=1
       export SGLANG_COSMOS3_TEACACHE_THRESH=0.30
+      export SGLANG_COSMOS3_TEACACHE_START=5
+      export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+      export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1
+      ;;
+    teacache_c105_s5)
+      export SGLANG_COSMOS3_TEACACHE_ENABLED=1
+      export SGLANG_COSMOS3_TEACACHE_THRESH=1.05
+      export SGLANG_COSMOS3_TEACACHE_START=5
+      export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+      export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1
+      ;;
+    teacache_c110_s5)
+      export SGLANG_COSMOS3_TEACACHE_ENABLED=1
+      export SGLANG_COSMOS3_TEACACHE_THRESH=1.10
+      export SGLANG_COSMOS3_TEACACHE_START=5
+      export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+      export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1
+      ;;
+    teacache_c115_s5)
+      export SGLANG_COSMOS3_TEACACHE_ENABLED=1
+      export SGLANG_COSMOS3_TEACACHE_THRESH=1.15
+      export SGLANG_COSMOS3_TEACACHE_START=5
+      export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
+      export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1
+      ;;
+    teacache_c120_s5)
+      export SGLANG_COSMOS3_TEACACHE_ENABLED=1
+      export SGLANG_COSMOS3_TEACACHE_THRESH=1.20
       export SGLANG_COSMOS3_TEACACHE_START=5
       export SGLANG_COSMOS3_TEACACHE_MAX_CONTINUOUS_HITS=1
       export SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1

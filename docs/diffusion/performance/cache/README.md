@@ -1,16 +1,19 @@
-# LTX-2.3 Cache Experiments README
+# Diffusion Cache Experiments README
 
-This README is the cache-specific home for the current LTX-2.3 cache work. It
+This README is the cache-specific home for the current diffusion cache work. It
 keeps cache experiment notes out of the repository top-level README and records
 what changed, how the acceleration works, what was measured, where the artifacts
 are, and what is still open.
 
 ## Scope
 
-- Branch: `cache-hq15-bench`.
+- LTX-2.3 experiment branch: `cache-hq15-bench`.
+- Cosmos3 migration branch: `cosmos3-cache-migration`.
 - Base development branch: `ltx2-dit-fusion-report`.
-- Main target: test cache strategies on the 10s LTX-2.3 two-stage pipelines,
+- Main LTX-2.3 target: test cache strategies on the 10s two-stage pipelines,
   including HQ 15-step stage 1 and non-HQ 30-step stage 1.
+- Cosmos3 target: migrate and benchmark TeaCache/PAB/Cache-DiT hooks on
+  SGLang's Cosmos3 pipeline, with TeaCache as the active NRT follow-up.
 - Prompts use concrete scenes instead of abstract stress prompts:
   - Prompt 0: elderly ceramic artist painting blue patterns on a porcelain vase.
   - Prompt 1: red fox running through tall grass at sunrise.
@@ -59,6 +62,58 @@ saves `stage1_out.mp4`.
 | PAB | Reuses attention outputs over configured broadcast windows. | Previous 1:1 speed and identical-output run means the tested configuration did not produce effective skips. Do not use that result as accepted acceleration. |
 | DBCache / Cache-DiT | Skips selected DiT blocks from a residual-difference policy. | Implemented through Cache-DiT flags. Aggressive preset had visible quality problems. A milder preset targeting about 1.5x remains worth testing. |
 | LTX2 stage1 cache-core | Handwritten residual reuse inside the LTX2 stage-1 block stack. | Separate experimental ablation from TeaCache. Not accepted as the main result. |
+
+## Cosmos3 TeaCache migration
+
+Runtime changes:
+
+- Added Cosmos3 TeaCache residual replay through:
+  - `python/sglang/multimodal_gen/runtime/cache/cosmos3_teacache.py`
+  - `python/sglang/multimodal_gen/runtime/models/dits/cosmos3video.py`
+  - `python/sglang/multimodal_gen/runtime/pipelines_core/stages/model_specific_stages/cosmos3.py`
+- Added Cosmos3 cache benchmark and report scripts:
+  - `scripts/run_cosmos3_cache_matrix.sh`
+  - `scripts/make_cosmos3_cache_report.py`
+
+Cosmos3 TeaCache uses the same high-level decision rule as LTX2: compare the
+current modulated transformer input with the previous computed one, accumulate a
+relative L1 distance, and on a hit skip the Cosmos3 transformer block stack by
+replaying the cached residual. The skipped denoising step still runs scheduler
+bookkeeping and decode later; the acceleration comes from avoiding transformer
+block execution for that step.
+
+NRT calibration on `2026-06-04` with `nvidia/Cosmos3-Nano`, 35 denoise steps,
+121 frames, and prompt 0 showed that LTX-style thresholds do not transfer
+directly:
+
+| Variant | Threshold | Start | Hits | Skipped steps | Readout |
+|---|---:|---:|---:|---|---|
+| TeaCache t0.04 | 0.04 | 5 | 0 | `[]` | No real skip. Apparent prompt-0 speedup was first-run baseline noise. |
+| TeaCache t0.06 | 0.06 | 5 | 0 | `[]` | No real skip. |
+| TeaCache t0.08 | 0.08 | 5 | 0 | `[]` | No real skip. |
+| TeaCache t0.12 | 0.12 | 5 | 0 | `[]` | No real skip. Logged `rel_l1` was about `1.00-1.12`. |
+
+Because the observed Cosmos3 `rel_l1` scale is around `1.0`, the active sweep
+uses Cosmos3-specific thresholds:
+
+```bash
+VARIANTS="baseline teacache_c105_s5 teacache_c110_s5 teacache_c115_s5 teacache_c120_s5"
+```
+
+These map to thresholds `1.05`, `1.10`, `1.15`, and `1.20`, with start step `5`
+and max continuous hits `1`. Logs keep `SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS=1`
+enabled for these variants so each recompute/hit decision can be audited from
+the report artifacts.
+
+NRT artifact roots:
+
+```text
+Low-threshold 16B sweep:
+/lustre/fsw/portfolios/nvr/projects/nvr_elm_llm/users/junsongc/staging/sol-ltx-infer-cosmos3-cache/outputs/cosmos3-teacache-16b-nrt-4594090
+
+Initial high-threshold probe:
+/lustre/fsw/portfolios/nvr/projects/nvr_elm_llm/users/junsongc/staging/sol-ltx-infer-cosmos3-cache/outputs/cosmos3-teacache-16b-high-nrt-4594341
+```
 
 ## TeaCache mechanism
 
