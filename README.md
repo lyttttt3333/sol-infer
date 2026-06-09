@@ -1,200 +1,237 @@
-<div align="center" id="sglangtop">
-<img src="https://raw.githubusercontent.com/sgl-project/sglang/main/assets/logo.png" alt="logo" width="400" margin="10px"></img>
+# Sol-LTX-Infer — model deployment & inference-acceleration guide
 
-[![PyPI](https://img.shields.io/pypi/v/sglang)](https://pypi.org/project/sglang)
-![PyPI - Downloads](https://static.pepy.tech/badge/sglang?period=month)
-[![license](https://img.shields.io/github/license/sgl-project/sglang.svg)](https://github.com/sgl-project/sglang/tree/main/LICENSE)
-[![issue resolution](https://img.shields.io/github/issues-closed-raw/sgl-project/sglang)](https://github.com/sgl-project/sglang/issues)
-[![open issues](https://img.shields.io/github/issues-raw/sgl-project/sglang)](https://github.com/sgl-project/sglang/issues)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sgl-project/sglang)
+> This is a fork of SGLang's `multimodal_gen` (diffusion) subsystem. It adds a
+> **model-agnostic inference-acceleration framework** at
+> `python/sglang/multimodal_gen/runtime/efficiency/` and an optimized LTX-2.3 HQ
+> path. **This README is the authoritative entry point — start here.**
+> (Component notes live in `python/sglang/multimodal_gen/.claude/CLAUDE.md`.)
 
-</div>
+---
 
---------------------------------------------------------------------------------
+## TL;DR for a new agent
 
-<p align="center">
-<a href="https://lmsys.org/blog/"><b>Blog</b></a> |
-<a href="https://docs.sglang.io/"><b>Documentation</b></a> |
-<a href="https://roadmap.sglang.io/"><b>Roadmap</b></a> |
-<a href="https://slack.sglang.io/"><b>Join Slack</b></a> |
-<a href="https://meet.sglang.io/"><b>Weekly Dev Meeting</b></a> |
-<a href="https://github.com/sgl-project/sgl-learning-materials?tab=readme-ov-file#slides"><b>Slides</b></a>
-</p>
+- To **bring up a new model**: do **Phase 1** (port the diffusers pipeline to an
+  SGLang baseline, correctness first), then **Phase 2** (declare a `ModelSpec`
+  and switch on acceleration techniques). See below.
+- The acceleration techniques split into **runtime techniques** (per-step data-flow
+  hooks: token-prune, step-cache) and **build/load model-transforms** (installed
+  once: sparse-attention/PISA, NVFP4 precision, KWL fusions). A model adapts by
+  writing **one `ModelSpec`**; the framework reuses each technique.
+- **⚠️ Before any benchmark or quality test, confirm the official configuration**
+  (resolution / fps / frames / steps / sigmas / seed). See
+  [Official configuration](#official-configuration-confirm-this-before-testing).
+  A "speedup" or "quality" number measured at the wrong resolution/length is meaningless.
 
-## News
-- [2026/02] 🔥 Unlocking 25x Inference Performance with SGLang on NVIDIA GB300 NVL72 ([blog](https://lmsys.org/blog/2026-02-20-gb300-inferencex/)).
-- [2026/01] 🔥 SGLang Diffusion accelerates video and image generation ([blog](https://lmsys.org/blog/2026-01-16-sglang-diffusion/)).
-- [2025/12] SGLang provides day-0 support for latest open models ([MiMo-V2-Flash](https://lmsys.org/blog/2025-12-16-mimo-v2-flash/), [Nemotron 3 Nano](https://lmsys.org/blog/2025-12-15-run-nvidia-nemotron-3-nano/), [Mistral Large 3](https://github.com/sgl-project/sglang/pull/14213), [LLaDA 2.0 Diffusion LLM](https://lmsys.org/blog/2025-12-19-diffusion-llm/), [MiniMax M2](https://lmsys.org/blog/2025-11-04-miminmax-m2/)).
-- [2025/10] 🔥 SGLang now runs natively on TPU with the SGLang-Jax backend ([blog](https://lmsys.org/blog/2025-10-29-sglang-jax/)).
-- [2025/09] Deploying DeepSeek on GB200 NVL72 with PD and Large Scale EP (Part II): 3.8x Prefill, 4.8x Decode Throughput ([blog](https://lmsys.org/blog/2025-09-25-gb200-part-2/)).
-- [2025/09] SGLang Day 0 Support for DeepSeek-V3.2 with Sparse Attention ([blog](https://lmsys.org/blog/2025-09-29-deepseek-V32/)).
-- [2025/08] SGLang x AMD SF Meetup on 8/22: Hands-on GPU workshop, tech talks by AMD/xAI/SGLang, and networking ([Roadmap](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_sglang_roadmap.pdf), [Large-scale EP](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_sglang_ep.pdf), [Highlights](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_highlights.pdf), [AITER/MoRI](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_aiter_mori.pdf), [Wave](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/amd_meetup_wave.pdf)).
+---
 
-<details>
-<summary>More</summary>
+## Official configuration (CONFIRM THIS BEFORE TESTING)
 
-- [2025/11] SGLang Diffusion accelerates video and image generation ([blog](https://lmsys.org/blog/2025-11-07-sglang-diffusion/)).
-- [2025/10] PyTorch Conference 2025 SGLang Talk ([slide](https://github.com/sgl-project/sgl-learning-materials/blob/main/slides/sglang_pytorch_2025.pdf)).
-- [2025/10] SGLang x Nvidia SF Meetup on 10/2 ([recap](https://x.com/lmsysorg/status/1975339501934510231)).
-- [2025/08] SGLang provides day-0 support for OpenAI gpt-oss model ([instructions](https://github.com/sgl-project/sglang/issues/8833))
-- [2025/06] SGLang, the high-performance serving infrastructure powering trillions of tokens daily, has been awarded the third batch of the Open Source AI Grant by a16z ([a16z blog](https://a16z.com/advancing-open-source-ai-through-benchmarks-and-bold-experimentation/)).
-- [2025/05] Deploying DeepSeek with PD Disaggregation and Large-scale Expert Parallelism on 96 H100 GPUs ([blog](https://lmsys.org/blog/2025-05-05-large-scale-ep/)).
-- [2025/06] Deploying DeepSeek on GB200 NVL72 with PD and Large Scale EP (Part I): 2.7x Higher Decoding Throughput ([blog](https://lmsys.org/blog/2025-06-16-gb200-part-1/)).
-- [2025/03] Supercharge DeepSeek-R1 Inference on AMD Instinct MI300X ([AMD blog](https://rocm.blogs.amd.com/artificial-intelligence/DeepSeekR1-Part2/README.html))
-- [2025/03] SGLang Joins PyTorch Ecosystem: Efficient LLM Serving Engine ([PyTorch blog](https://pytorch.org/blog/sglang-joins-pytorch/))
-- [2025/02] Unlock DeepSeek-R1 Inference Performance on AMD Instinct™ MI300X GPU ([AMD blog](https://rocm.blogs.amd.com/artificial-intelligence/DeepSeekR1_Perf/README.html))
-- [2025/01] SGLang provides day one support for DeepSeek V3/R1 models on NVIDIA and AMD GPUs with DeepSeek-specific optimizations. ([instructions](https://github.com/sgl-project/sglang/tree/main/benchmark/deepseek_v3), [AMD blog](https://www.amd.com/en/developer/resources/technical-articles/amd-instinct-gpus-power-deepseek-v3-revolutionizing-ai-development-with-sglang.html), [10+ other companies](https://x.com/lmsysorg/status/1887262321636221412))
-- [2024/12] v0.4 Release: Zero-Overhead Batch Scheduler, Cache-Aware Load Balancer, Faster Structured Outputs ([blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/)).
-- [2024/10] The First SGLang Online Meetup ([slides](https://github.com/sgl-project/sgl-learning-materials?tab=readme-ov-file#the-first-sglang-online-meetup)).
-- [2024/09] v0.3 Release: 7x Faster DeepSeek MLA, 1.5x Faster torch.compile, Multi-Image/Video LLaVA-OneVision ([blog](https://lmsys.org/blog/2024-09-04-sglang-v0-3/)).
-- [2024/07] v0.2 Release: Faster Llama3 Serving with SGLang Runtime (vs. TensorRT-LLM, vLLM) ([blog](https://lmsys.org/blog/2024-07-25-sglang-llama3/)).
-- [2024/02] SGLang enables **3x faster JSON decoding** with compressed finite state machine ([blog](https://lmsys.org/blog/2024-02-05-compressed-fsm/)).
-- [2024/01] SGLang provides up to **5x faster inference** with RadixAttention ([blog](https://lmsys.org/blog/2024-01-17-sglang/)).
-- [2024/01] SGLang powers the serving of the official **LLaVA v1.6** release demo ([usage](https://github.com/haotian-liu/LLaVA?tab=readme-ov-file#demo)).
+The LTX-2.3 HQ two-stage reference config. Any timing / quality / VBench number
+**must** be produced with these exact settings, or it does not compare:
 
-</details>
+| param | value |
+|---|---|
+| resolution | **1088 × 1920** (stage-1 runs half-res 544 × 960, stage-2 full-res) |
+| frames | **241** |
+| fps | **24** → duration ≈ **10 s** |
+| seed | **42** |
+| stage-1 | 15 res2s steps (with CFG), distilled-LoRA strength 0.25 |
+| stage-2 | 3 res2s steps, sigmas **[0.909375, 0.725, 0.421875, 0.0]**, LoRA strength 0.5 |
+| guidance_scale | 3.0 (video CFG) |
+| negative prompt | the official long HQ negative prompt in `scripts/run_ltx23_sglang_hq_1080p10s.sh` |
 
-## About
-SGLang is a high-performance serving framework for large language models and multimodal models.
-It is designed to deliver low-latency and high-throughput inference across a wide range of setups, from a single GPU to large distributed clusters.
-Its core features include:
-
-- **Fast Runtime**: Provides efficient serving with RadixAttention for prefix caching, a zero-overhead CPU scheduler, prefill-decode disaggregation, speculative decoding, continuous batching, paged attention, tensor/pipeline/expert/data parallelism, structured outputs, chunked prefill, quantization (FP4/FP8/INT4/AWQ/GPTQ), and multi-LoRA batching.
-- **Broad Model Support**: Supports a wide range of language models (Llama, Qwen, DeepSeek, Kimi, GLM, GPT, Gemma, Mistral, etc.), embedding models (e5-mistral, gte, mcdse), reward models (Skywork), and diffusion models (WAN, Qwen-Image), with easy extensibility for adding new models. Compatible with most Hugging Face models and OpenAI APIs.
-- **Extensive Hardware Support**: Runs on NVIDIA GPUs (GB200/B300/H100/A100/Spark/5090), AMD GPUs (MI355/MI300), Intel Xeon CPUs, Google TPUs, Ascend NPUs, and more.
-- **Active Community**: SGLang is open-source and supported by a vibrant community with widespread industry adoption, powering over 400,000 GPUs worldwide.
-- **RL & Post-Training Backbone**: SGLang is a proven rollout backend used for training many frontier models, with native RL integrations and adoption by well-known post-training frameworks such as [**AReaL**](https://github.com/inclusionAI/AReaL), [**Miles**](https://github.com/radixark/miles), [**slime**](https://github.com/THUDM/slime), [**Tunix**](https://github.com/google/tunix), [**verl**](https://github.com/volcengine/verl) and more.
-
-## Getting Started
-- [Install SGLang](https://docs.sglang.io/get_started/install.html)
-- [Quick Start](https://docs.sglang.io/basic_usage/send_request.html)
-- [Backend Tutorial](https://docs.sglang.io/basic_usage/openai_api_completions.html)
-- [Frontend Tutorial](https://docs.sglang.io/references/frontend/frontend_tutorial.html)
-- [Contribution Guide](https://docs.sglang.io/developer_guide/contribution_guide.html)
-
-## Benchmark and Performance
-Learn more in the release blogs: [v0.2 blog](https://lmsys.org/blog/2024-07-25-sglang-llama3/), [v0.3 blog](https://lmsys.org/blog/2024-09-04-sglang-v0-3/), [v0.4 blog](https://lmsys.org/blog/2024-12-04-sglang-v0-4/), [Large-scale expert parallelism](https://lmsys.org/blog/2025-05-05-large-scale-ep/), [GB200 rack-scale parallelism](https://lmsys.org/blog/2025-09-25-gb200-part-2/), [GB300 long context](https://lmsys.org/blog/2026-02-19-gb300-longctx/).
-
-
-### LTX 2.3 1080p10s Lossless Kernel-Only Record
-
-On branch `ltx2-dit-fusion-report`, commit `b801a27ce6e760f788c06daaa0cec18360d9722f`
-contains the recorded lossless kernel/runtime-only LTX 2.3 single-GPU result below 60s for
-`1920x1088`, `241` frames, `24` fps, `30` inference steps, and `guidance_scale=3.0`.
-The run uses `LTX2TwoStagePipeline`, `performance_mode=speed`, resident two-stage DiTs,
-and keeps sampling semantics unchanged: no sparse attention, no NVFP4/low-precision
-quantization, no pruning, and no scheduler/CFG/LoRA/step-count changes.
-
-- End-to-end warmed request time, excluding warmup: `59.33s`.
-- Core time through VAE decode: `54.915s`.
-- Stage 1 denoise: `44.421s` total, `1.481s/step`.
-- Stage 2 refinement: `8.705s` total, `2.900s/step`.
-- Video/audio decode stage: `5.913s`.
-- Profile artifact: `outputs/ltx23-dev-1080p10s-speed-resident-prefix-qknorm-rope-dualmod-adavalues-all9-residual-ffn-gateout-audioqkvg-tiledvae-decode-profile/perf.json`.
-- Launch script: `outputs/slurm/ltx23_all9_gateout_audioqkvg_prefix_tiledvae_decode_profile_1080p.sbatch`.
-- Launch log: `outputs/slurm/ltx23-prefix-decode-1080-2896582.out`.
-- Primary implementation paths: `python/sglang/multimodal_gen/runtime/models/dits/ltx_2.py`,
-  `python/sglang/multimodal_gen/runtime/pipelines_core/stages/denoising_av.py`, and
-  `python/sglang/multimodal_gen/runtime/pipelines_core/stages/decoding_av.py`.
-
-The launch enables the lossless fusion/runtime path with:
-
+Canonical run:
 ```bash
-export CUDA_VISIBLE_DEVICES=0
-export PYTHONPATH=python
-export SGLANG_LTX2_SHARE_BLOCK0_SELF_ATTN=1
-export SGLANG_LTX2_FUSED_ADALN=1
-export SGLANG_LTX2_FUSED_QKNORM_ROPE=1
-export SGLANG_LTX2_FUSED_DUAL_MODULATE=1
-export SGLANG_LTX2_FUSED_ADA_VALUES_ALL=1
-export SGLANG_LTX2_FUSED_RESIDUAL_GATE=1
-export SGLANG_LTX2_FUSED_FFN_PROJ_IN_GELU=1
-export SGLANG_LTX2_COMPILE_GATE_TO_OUT=1
-export SGLANG_LTX2_FUSED_AUDIO_QKVG=1
-export SGLANG_LTX2_COMPILE_TILED_VAE_DECODER=1
-export SGLANG_LTX2_VAE_COMPILE_MODE=max-autotune-no-cudagraphs
-export SGLANG_LTX2_SHARE_GUIDANCE_PREFIX=1
-export SGLANG_DIFFUSION_DECODE_PROFILE=1
+bash scripts/run_ltx23_sglang_hq_1080p10s.sh dense   # baseline (no optimizations)
+# -> outputs/.../perf.json carries total_duration_ms + per-stage `steps`
+```
+Reference timing at this config (warmed): baseline ≈ **98 s**, full-opt ≈ **41 s**
+(≈ 2.39×). A no-warmup run is compile-dominated (~110 s) and is **not** comparable
+— always warm (`WARMUP=true`) before quoting a total.
+
+---
+
+## Architecture: the 4 lifecycle phases
+
+A run moves through four phases; acceleration techniques attach at different ones:
+
+```
+① ASSEMBLE   runtime/pipelines/<model>_pipeline.py : create_pipeline_stages()
+                 -> [TextEncoding, Denoising, Decoding]
+② LOAD       stages/base.py:load_model() -> runtime/loader/      [NVFP4 quant here]
+③ BUILD      runtime/models/dits/<model>.py __init__             [KWL fusions, attention backend here]
+④ RUNTIME    runtime/pipelines_core/stages/<model>_denoising.py  [the per-step loop; step-cache, prune here]
+                 |-- per step --> runtime/models/dits/<model>.py forward()  [block loop]
 ```
 
+This is exactly why techniques split into two kinds (see below): things installed
+at ②/③ are **ModelTransforms**; things that hook the per-step loop at ④ are
+**Techniques**.
 
-### LTX 2.3 44.9s HQ Quality-Aligned Recommended Path
+---
 
-The accepted optimization target for this branch is the HQ 1080p 10s recipe in
-`README_LTX23_46S_HQ.md`. The current recommended path keeps the HQ two-stage pipeline and uses:
+## Phase 1 — diffusers pipeline → SGLang baseline (correctness first, zero opt)
 
-```text
-stage-1 cache preset: 8of15_last_29calls
-stage-2 PISA sparsity: 0.9
-stage-2 PISA block size: 64
-stage-2 PISA approx_remainder: true
-stage-2 PISA route_mode: score
-selective FP4: TE NVFP4 video FFN only
-extra kernel-only add-on: cross-attention dual modulation fusion
-measured total: 44.921 s
+Goal: **same output as diffusers at the same seed.** This is the real work; the
+framework does not help here.
+
+| diffusers | SGLang landing spot | note |
+|---|---|---|
+| `pipe.transformer` | `runtime/models/dits/<model>.py` (+ module-level `EntryClass = <Transformer>`) | **route attention through the SGLang attention layer** so backends are swappable later |
+| `pipe.vae` / `pipe.text_encoder` | `runtime/models/vaes/` · `runtime/models/encoders/` | often reuse existing |
+| `pipe.scheduler` | `runtime/models/schedulers/` | port or reuse |
+| weights | `runtime/loader/` | map diffusers state_dict keys → your modules |
+
+Pipeline assembly + registration (auto-discovered by `registry.py` via `EntryClass`):
+```python
+# runtime/pipelines/my_pipeline.py
+class MyPipeline(ComposedPipelineBase):
+    pipeline_name = "MyPipeline"
+    def create_pipeline_stages(self, server_args):
+        return [TextEncodingStage(...), MyDenoisingStage(...), MyDecodingStage(...)]
+EntryClass = MyPipeline
+```
+- Config: `configs/pipeline_configs/<model>.py` (or reuse `diffusers_generic.py` for
+  structurally-standard models — may need little/no custom code).
+
+**Phase-1 design choices that make Phase 2 cheap** (do these now):
+1. attention goes through the framework attention layer → sparse attention later = a flag.
+2. clean block list (`self.transformer_blocks`) → cache / prune seam.
+3. clear prunable token segment → prune seam.
+
+**Validation gate:** `sglang generate --model-path ... --prompt "..." --seed 42`
+matches diffusers at the official config → **this is your baseline / reference.**
+
+---
+
+## Phase 2 — add inference techniques (the efficiency framework)
+
+Only after the baseline is correct.
+
+### 2a. Write one `ModelSpec` (the only model-specific declaration)
+
+A `ModelSpec` is a small **declarative interface card**: it tells the framework
+which structural seams the model offers and how to reach them. No algorithms.
+
+```python
+# python/sglang/multimodal_gen/runtime/efficiency/models/<model>_spec.py
+@register_model_spec("MyTransformer")          # by transformer class name
+def _spec():
+    return ModelSpec(
+        name="MyModel",
+        get_blocks="transformer_blocks",                 # name OR callable -> the live nn.ModuleList
+        prunable_segment=lambda h, ctx: (0, h.shape[1]), # which token span is prunable
+        swappable_attention=True,                        # attention routes through the framework layer
+    )
+```
+- The accessor (`get_blocks`, `prunable_segment`) can be an **attribute name** (resolved
+  via `getattr`) or a **callable** (when reaching the seam needs logic: nested path,
+  concatenated `video+text` sequence, computed segment). Both resolve to the real
+  live entity on the model instance.
+- Capabilities are the model's "slots". `compose()` type-checks a technique's
+  required capabilities against the spec and **refuses** at compose-time (clear
+  early error) if a slot is missing — the analogue of `BlockAdapterRegister.is_supported()`.
+
+### 2b. Two kinds of "skill" — runnable vs methodology
+
+Not every optimization can be a generic runnable technique. The framework has two kinds:
+
+- **Runnable skills (generic Techniques/Transforms)** — the algorithm is model-independent,
+  so you just `compose()` them: **token-prune** (shared `keep_indices` scorer),
+  **step-cache**, **teacache**, **sparse-attention selection** (the backend registry is
+  model-agnostic). These transfer to a new model for free / near-free.
+- **Methodology skills (recipes, not code)** — for **inherently model-specific**
+  optimizations whose kernels/quant target one model's exact ops (**KWL operator fusion**,
+  **NVFP4 FFN quantization**). There is no generic runnable version; instead you **read the
+  recipe and implement it for your model**, then register a per-model `ModelTransform`.
+  See **`runtime/efficiency/skills/operator_fusion.md`**.
+
+### 2c. Pick techniques by lifecycle phase
+
+| technique | kind | phase | cost to add |
+|---|---|---|---|
+| sparse attention (PISA) | runnable | ③ build | **free**: `--component-attention-backends transformer=piecewise_attn` (a flag) |
+| **token-prune** | runnable | ④ runtime | scorer is generic; **needs wiring** of model gather/scatter (a guarded block) |
+| **step-cache** | runnable | ④ runtime | **needs wiring**: wrap the per-step call |
+| **teacache** | runnable | ④ runtime | generic decision core; model stashes its modulated-input signal |
+| KWL operator fusions | **methodology** | ③ build | read `skills/operator_fusion.md`, implement model kernels, register a `ModelTransform` |
+| NVFP4 precision | **methodology** | ② load | same shape: model-specific quant + a registered transform |
+
+→ Sparse-attention is free once attention routes through the framework layer.
+token-prune/step-cache/teacache are runnable but touch `forward` (guarded — OFF
+must be byte-identical). KWL/NVFP4 are **not** generic — follow the methodology skill.
+
+### 2c. Validation discipline (add one at a time)
+
+1. Each technique **OFF == byte-identical baseline** (structural guard guarantees it;
+   verify it).
+2. ON → measure **speedup + quality vs the Phase-1 baseline, at the official config**.
+3. Only then add the next.
+
+### 2d. Assemble a preset
+```python
+def my_model_full_opt():
+    return [SparseAttention(...), NVFP4FFN(...), KWLFusions(...),
+            TokenPrune(keep_ratio=0.5, ...), StepCache(...)]
+# compose(my_model_full_opt(), spec) -> capability + conflict check + ordering -> Plan
 ```
 
-Changing the PISA/cache algorithm parameters is not a valid speedup for this baseline.
-In particular, the earlier non-HQ diagnostic with:
+---
 
-```text
-SGLANG_PIECEWISE_ATTN_SPARSITY=0.999
-SGLANG_PIECEWISE_ATTN_BLOCK_SIZE=32
-SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER=false
-SGLANG_PIECEWISE_ATTN_ROUTE_MODE=local
+## The efficiency framework (`runtime/efficiency/`)
+
+```
+efficiency/
+├── schedule.py     Schedule[T] — time-varying params (e.g. "first 2 steps high precision")
+├── technique.py    Technique base · Phase · Seam (effect set) · Capability · EXCLUSIVE_SEAMS
+├── transform.py    ModelTransform base · TransformPhase (LOAD/BUILD)
+├── spec.py         ModelSpec — a model's declared seams (the unified interface/adapter)
+├── compose.py      compose() = capability type-check + conflict (effect) check + ordering -> Plan
+├── registry.py     register_technique / register_transform / register_model_spec
+├── presets.py      ltx_full_opt() — the 5-component assembly
+├── techniques/     token_prune.py (shared scorer) · step_cache.py · teacache.py   [runnable]
+├── transforms/     sparse_attention.py (PISA) · nvfp4_ffn.py · kwl_fusions.py     [build/load env-triggers]
+├── skills/         operator_fusion.md — methodology recipe for model-specific fusion (KWL idea)
+└── models/         ltx2_spec.py
 ```
 
-is an aggressive sparse-attention experiment only, not a quality-aligned result.
+Core idea: **generic algorithm + per-model `ModelSpec` declaring only the seams +
+a registry connecting them** — the same idiom as SGLang's existing
+`AttentionBackend` registry and `BlockAdapterRegister`. Two plugin kinds:
 
-Kernel/runtime optimizations that can be evaluated without changing the accepted
-cache/PISA semantics include:
+- **Technique** (runtime, per-step): inserts hooks into the data flow
+  (`before_blocks`/`after_blocks`/`on_step`). e.g. token-prune, step-cache.
+- **ModelTransform** (build/load, once): installs a kernel / quantizes weights /
+  selects a backend, then runs. e.g. PISA, NVFP4, KWL. Delegates to the existing
+  env/registry mechanisms — does not reimplement them.
 
-- TE NVFP4 FFN epilogues: `proj_in + GELU` and `proj_out + bias + residual + gate`.
-- ModelOpt/CUTLASS FP4 GEMM epilogues: `bias + GELU` and `bias + residual + gate`.
-- Cross-attention dual modulation fusion: validated as the current recommended add-on (`1.024x` same-node speedup).
-- Compile/cache path fixes under `outputs/.cache`.
+`compose()` proves **structural** non-interference (exclusive seams: one attention
+backend / one FFN precision / one token-set owner; phase ordering). It does **not**
+prove numerical composition of lossy techniques — that is bounded by the
+off==identity invariant of each technique + empirical measurement at the official config.
 
+Self-test: `.conda/ltx23/bin/python scripts/efficiency_selftest.py` (CPU, 23 checks).
 
-### LTX 2.3 HQ KWL + Sparse Attention + PAB Cache
+### LTX-2.3 full-opt status
 
-The current HQ path and lossy acceleration matrix are documented in
-`docs/ltx23_sglang_hq_variants.md`. The unified runner is:
+`ltx_full_opt()` assembles all 5 components. Today: **token-prune is wired through
+the framework** (scoring via `keep_indices`, guarded in `ltx_2_denoising.py`; GPU-
+validated, stage-2 14.7 s → 11.1 s, total 45.1 s → 41.1 s warmed). PISA / NVFP4 / KWL
+currently take effect via their existing env mechanisms (the framework transforms
+emit the same env); step-cache (SCSP) still uses the existing cache-core path.
 
-```bash
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_sparse_cache
-```
+---
 
-Validated 1080p 10s HQ matrix, warmup excluded, seed `42`, `15` stage-1 steps
-and `3` stage-2 refinement steps:
+## Cluster / running notes
 
-- `kwl`: `69.120s` total, `63.646s` denoise.
-- `kwl_cache`: `60.598s` total, `55.075s` denoise.
-- `kwl_sparse`: `61.405s` total, `56.008s` denoise.
-- `kwl_sparse_cache`: `53.778s` total, `48.004s` denoise, `1.285x` total speedup vs KWL.
+- 4-GPU-minimum QOS; submit via the `scripts/slurm_ltx23_*.sh` jobs. Compile cache
+  persists under `outputs/.cache/`.
+- On a GPU-less login node, importing the full `sglang` package hangs on CUDA
+  enumeration (and torch import is slow off Lustre); run on a GPU node, or for a
+  pure-subpackage unit test stub the parent packages (see `scripts/efficiency_selftest.py`).
+- Always `WARMUP=true` before quoting a total time (no-warmup is compile-dominated).
 
-Best setting: piecewise sparse video self-attention with layer `0` dense and
-first `3` stage-1 steps dense, plus PAB attention-output cache from stage-1 step
-`6`; stage-2 PAB is disabled by default because full-resolution cached attention
-outputs OOM on single-card resident HQ inference.
+---
 
-Artifacts:
-
-```bash
-outputs/ltx23-sglang-hq-kwl-sparse-cache-matrix-pab6-stage2off-1080p10s/benchmark_summary.json
-outputs/ltx23-sglang-hq-kwl-sparse-cache-matrix-pab6-stage2off-1080p10s/kwl-vs-kwl-sparse-cache-side-by-side.mp4
-```
-
-## Adoption and Sponsorship
-SGLang has been deployed at large scale, generating trillions of tokens in production each day. It is trusted and adopted by a wide range of leading enterprises and institutions, including xAI, AMD, NVIDIA, Intel, LinkedIn, Cursor, Oracle Cloud, Google Cloud, Microsoft Azure, AWS, Atlas Cloud, Voltage Park, Nebius, DataCrunch, Novita, InnoMatrix, MIT, UCLA, the University of Washington, Stanford, UC Berkeley, Tsinghua University, Jam & Tea Studios, Baseten, and other major technology organizations.
-As an open-source LLM inference engine, SGLang has become the de facto industry standard, with deployments running on over 400,000 GPUs worldwide.
-SGLang is currently hosted under the non-profit open-source organization [LMSYS](https://lmsys.org/about/).
-
-<img src="https://raw.githubusercontent.com/sgl-project/sgl-learning-materials/refs/heads/main/slides/adoption.png" alt="logo" width="800" margin="10px"></img>
-
-## Contact Us
-For enterprises interested in adopting or deploying SGLang at scale, including technical consulting, sponsorship opportunities, or partnership inquiries, please contact us at [sglang@lmsys.org](mailto:sglang@lmsys.org).
-
-Long-term active SGLang contributors are eligible for coding agent sponsorship, such as Cursor, Claude Code, or OpenAI Codex. Email [sglang@lmsys.org](mailto:sglang@lmsys.org) with your most important commits or pull requests.
-
-## Acknowledgment
-We learned the design and reused code from the following projects: [Guidance](https://github.com/guidance-ai/guidance), [vLLM](https://github.com/vllm-project/vllm), [LightLLM](https://github.com/ModelTC/lightllm), [FlashInfer](https://github.com/flashinfer-ai/flashinfer), [Outlines](https://github.com/outlines-dev/outlines), and [LMQL](https://github.com/eth-sri/lmql).
+*Upstream SGLang README and the older `README_LTX23_46S_HQ.md` are preserved in git
+history. This file supersedes them as the project entry point.*

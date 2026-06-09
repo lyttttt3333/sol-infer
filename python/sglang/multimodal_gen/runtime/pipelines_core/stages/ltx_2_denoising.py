@@ -437,6 +437,55 @@ def _ltx2_install_pab_if_enabled(transformer: object):
         return None
 
 
+# --- stage-2 midpoint token-prune config (efficiency framework scoring) ---
+# Scoring is delegated to runtime.efficiency.techniques.token_prune.keep_indices
+# (the single shared scorer, deduped with cosmos3). Only the model-specific
+# gather/scatter/compensation lives here (LTX2DenoisingStage._ltx2_prune_*).
+
+
+def _ltx2_stage2_midpoint_prune_ratio() -> float:
+    raw = os.environ.get("SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_RATIO")
+    if raw is None:
+        return 1.0
+    try:
+        ratio = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    return ratio if 0.0 < ratio < 1.0 else 1.0
+
+
+def _ltx2_stage2_midpoint_prune_method() -> str:
+    return os.environ.get(
+        "SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_METHOD", "feat_norm"
+    ).strip().lower()
+
+
+def _ltx2_stage2_midpoint_prune_steps() -> "set[int] | None":
+    raw = os.environ.get("SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_STEPS")
+    if raw is None:
+        return None
+    steps: set[int] = set()
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            lo, _, hi = tok.partition("-")
+            try:
+                lo_i, hi_i = int(lo), int(hi)
+            except ValueError:
+                continue
+            if hi_i < lo_i:
+                lo_i, hi_i = hi_i, lo_i
+            steps.update(range(lo_i, hi_i + 1))
+        else:
+            try:
+                steps.add(int(tok))
+            except ValueError:
+                continue
+    return steps
+
+
 def _ltx2_make_stage1_cache_core_if_enabled(ctx: LTX2DenoisingContext):
     if ctx.stage != "stage1":
         return None
@@ -1612,6 +1661,53 @@ class LTX2DenoisingStage(DenoisingStage):
             alpha_ratio * (denoised_next + sigma_down * eps_next) + sigma_up * noise
         )
         return x_noised.to(dtype=sample.dtype)
+
+    def _ltx2_prune_video_tokens_for_midpoint(
+        self,
+        ctx: "LTX2DenoisingContext",
+        step: "DenoisingStepState",
+        batch: "Req",
+        server_args: "ServerArgs",
+        model_kwargs: dict,
+        keep_indices: "torch.Tensor",
+    ) -> dict:
+        """Slice every VIDEO-TOKEN-ALIGNED entry of model_kwargs to keep_indices
+        on the token axis (model-specific gather for the stage-2 midpoint prune;
+        scoring is done by the efficiency framework). Audio/text/scalar entries
+        are untouched. Ported from the validated stash implementation."""
+        pruned = dict(model_kwargs)
+        hidden_states = pruned["hidden_states"]
+        pruned["hidden_states"] = hidden_states.index_select(1, keep_indices)
+
+        timestep = pruned.get("timestep")
+        if isinstance(timestep, torch.Tensor) and timestep.ndim >= 2:
+            pruned["timestep"] = timestep.index_select(1, keep_indices)
+
+        video_coords = pruned.get("video_coords")
+        if video_coords is None:
+            video_coords = self._get_ltx2_cuda_graph_video_coords(
+                step.current_model,
+                int(hidden_states.shape[0]),
+                ctx.latent_num_frames_for_model,
+                ctx.latent_height,
+                ctx.latent_width,
+                hidden_states.device,
+                batch.fps,
+            )
+        pruned["video_coords"] = video_coords.index_select(2, keep_indices)
+
+        video_self_attention_mask = pruned.get("video_self_attention_mask")
+        if isinstance(video_self_attention_mask, torch.Tensor):
+            pruned["video_self_attention_mask"] = (
+                video_self_attention_mask.index_select(1, keep_indices)
+            )
+
+        v2a_cross_attention_mask = pruned.get("v2a_cross_attention_mask")
+        if isinstance(v2a_cross_attention_mask, torch.Tensor):
+            pruned["v2a_cross_attention_mask"] = (
+                v2a_cross_attention_mask.index_select(1, keep_indices)
+            )
+        return pruned
 
     def _ltx2_stage2_res2s_step(
         self,
@@ -3015,13 +3111,75 @@ class LTX2DenoisingStage(DenoisingStage):
                                     repeated_attention_mask
                                 )
 
-                        with self._ltx2_model_forward_context(ctx, step):
-                            mid_v, mid_a = self._call_ltx2_model(
-                                ctx, step, batch, server_args, model_kwargs_local, pab_pass_id="stage2_midpoint"
+                        # Stage-2 midpoint token-prune (efficiency framework).
+                        # When keep-ratio r<1: score+keep top-K video tokens via
+                        # the shared framework scorer, run the midpoint VIDEO
+                        # forward on the K-token subset, and fill dropped tokens
+                        # with the main-eval velocity (model_video; Euler/eps2==
+                        # eps1). Guarded off CFG/SP. r>=1 or step not selected ->
+                        # original full call (byte-identical baseline).
+                        _prune_ratio = _ltx2_stage2_midpoint_prune_ratio()
+                        _prune_steps = _ltx2_stage2_midpoint_prune_steps()
+                        _prune_active = (
+                            _prune_ratio < 1.0
+                            and ctx.stage == "stage2"
+                            and not do_two_branch_cfg
+                            and get_sp_world_size() <= 1
+                            and (
+                                _prune_steps is None
+                                or int(step.step_index) in _prune_steps
+                            )
+                        )
+                        if _prune_active:
+                            from sglang.multimodal_gen.runtime.efficiency.techniques.token_prune import (
+                                keep_indices as _eff_keep_indices,
                             )
 
-                        mid_v = mid_v.float()
-                        mid_a = mid_a.float()
+                            _full_vh = model_kwargs_local["hidden_states"]
+                            _n_vtok = int(_full_vh.shape[1])
+                            _keep = _eff_keep_indices(
+                                _ltx2_stage2_midpoint_prune_method(),
+                                _n_vtok,
+                                _prune_ratio,
+                                _full_vh,
+                            )
+                            _n_keep = int(_keep.shape[0])
+                            _prune_active = _n_keep < _n_vtok
+                        if _prune_active:
+                            logger.info(
+                                "LTX-2 stage2 midpoint prune: step=%d method=%s "
+                                "kept=%d/%d (r=%.4f)",
+                                int(step.step_index),
+                                _ltx2_stage2_midpoint_prune_method(),
+                                _n_keep,
+                                _n_vtok,
+                                _prune_ratio,
+                            )
+                            _pruned_kwargs = self._ltx2_prune_video_tokens_for_midpoint(
+                                ctx, step, batch, server_args, model_kwargs_local, _keep
+                            )
+                            with self._ltx2_model_forward_context(ctx, step):
+                                _mid_v_sub, mid_a = self._call_ltx2_model(
+                                    ctx, step, batch, server_args, _pruned_kwargs,
+                                    pab_pass_id="stage2_midpoint",
+                                )
+                            _mid_v_sub = _mid_v_sub.float()
+                            mid_a = mid_a.float()
+                            _base_v = model_video.to(
+                                device=_mid_v_sub.device, dtype=_mid_v_sub.dtype
+                            )
+                            _scatter_idx = _keep.view(1, _n_keep, 1).expand(
+                                _base_v.shape[0], _n_keep, _base_v.shape[2]
+                            )
+                            mid_v = _base_v.scatter(1, _scatter_idx, _mid_v_sub)
+                        else:
+                            with self._ltx2_model_forward_context(ctx, step):
+                                mid_v, mid_a = self._call_ltx2_model(
+                                    ctx, step, batch, server_args, model_kwargs_local, pab_pass_id="stage2_midpoint"
+                                )
+
+                            mid_v = mid_v.float()
+                            mid_a = mid_a.float()
                         if do_two_branch_cfg:
                             mid_v_u, mid_v_t = mid_v.chunk(2)
                             mid_a_u, mid_a_t = mid_a.chunk(2)

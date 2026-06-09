@@ -4798,13 +4798,22 @@ class LTX2VideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
     ) -> tuple[object, ...] | None:
         if tensor is None:
             return None
+        # tensor._version raises RuntimeError (not AttributeError, so getattr's
+        # default won't catch it) on inference-mode tensors -- NVFP4/TE outputs
+        # or token-pruned/sliced coords from the efficiency-framework midpoint
+        # prune. Fall back to 0: under inference mode the tensor is not mutated
+        # in place, so a stale cache key is safe.
+        try:
+            version = tensor._version
+        except RuntimeError:
+            version = 0
         return (
             tensor.data_ptr(),
             tuple(tensor.shape),
             tuple(tensor.stride()),
             tensor.dtype,
             tensor.device,
-            getattr(tensor, "_version", 0),
+            version,
         )
 
     def _ltx2_rope_cache_key(
