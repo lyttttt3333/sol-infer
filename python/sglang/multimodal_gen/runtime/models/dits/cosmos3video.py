@@ -41,6 +41,7 @@ from sglang.multimodal_gen.runtime.cache.cosmos3_teacache import (
     Cosmos3TeaCacheCoordinator,
     cosmos3_teacache_config_from_env,
 )
+from sglang.multimodal_gen.runtime.models.dits import cosmos3_token_prune as _tp
 from sglang.multimodal_gen.runtime.models.dits.base import CachableDiT
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.srt.utils import add_prefix
@@ -150,19 +151,18 @@ def qwen3_apply_rotary_pos_emb(
         cos: [1, S, 1, D] or broadcastable
         sin: [1, S, 1, D] or broadcastable
     """
-    half = q.shape[-1] // 2
-    q1 = q[..., :half]
-    q2 = q[..., half:]
-    q_embed = torch.empty_like(q)
-    q_embed[..., :half] = q1 * cos[..., :half] - q2 * sin[..., :half]
-    q_embed[..., half:] = q2 * cos[..., half:] + q1 * sin[..., half:]
-
-    half = k.shape[-1] // 2
-    k1 = k[..., :half]
-    k2 = k[..., half:]
-    k_embed = torch.empty_like(k)
-    k_embed[..., :half] = k1 * cos[..., :half] - k2 * sin[..., :half]
-    k_embed[..., half:] = k2 * cos[..., half:] + k1 * sin[..., half:]
+    # Fusion-friendly form: build each half then concat, instead of
+    # ``empty_like`` + in-place indexed scatter. Numerically identical to the
+    # scatter version (verified bit-exact), but the scatter writes blocked
+    # Inductor fusion; the concat form fuses to ~1-2 kernels under torch.compile
+    # and avoids the extra allocation + masked-store passes in eager.
+    h = q.shape[-1] // 2
+    cos1, cos2 = cos[..., :h], cos[..., h:]
+    sin1, sin2 = sin[..., :h], sin[..., h:]
+    q1, q2 = q[..., :h], q[..., h:]
+    q_embed = torch.cat([q1 * cos1 - q2 * sin1, q2 * cos2 + q1 * sin2], dim=-1)
+    k1, k2 = k[..., :h], k[..., h:]
+    k_embed = torch.cat([k1 * cos1 - k2 * sin1, k2 * cos2 + k1 * sin2], dim=-1)
     return q_embed, k_embed
 
 
@@ -1069,6 +1069,281 @@ class Cosmos3OmniTransformer(CachableDiT):
         if not isinstance(self.cached_freqs_gen, dict):
             self.cached_freqs_gen = {}
 
+    def _maybe_init_module_profiling(self):
+        """Opt-in per-module CUDA-event time profiler (FFN/attn/proj/norm/misc).
+
+        Enabled with SGLANG_COSMOS3_PROFILE_MODULES=1. Registers forward hooks on
+        the transformer submodules, times each with CUDA events, and aggregates
+        per category over steady-state denoising steps (after a warmup), dumping a
+        JSON breakdown. No-op unless the env flag is set.
+        """
+        import os
+        if getattr(self, "_prof_inited", False):
+            return
+        self._prof_inited = True
+        if os.environ.get("SGLANG_COSMOS3_PROFILE_MODULES", "0") != "1":
+            return
+        import json
+        self._prof_pending = []          # (category, start_event, end_event) for current forward
+        self._prof_tot = {}              # category -> accumulated ms (steady-state)
+        self._prof_steps = 0
+        self._prof_warmup = int(os.environ.get("SGLANG_COSMOS3_PROFILE_WARMUP", "5"))
+        self._prof_dump = os.environ.get(
+            "SGLANG_COSMOS3_PROFILE_DUMP", "/home/yitongl/cosmos3-run/module_profile.json"
+        )
+        try:
+            self._prof_rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        except Exception:
+            self._prof_rank = 0
+
+        def categorize(name, mod):
+            cls = type(mod).__name__
+            n = name.lower()
+            if cls in ("Cosmos3CrossAttention", "Cosmos3CausalAttention"):
+                return "attn_block"            # whole attention block (incl. its proj+qknorm+core)
+            if n.endswith("mlp.gate_up_proj") or n.endswith("mlp.down_proj"):
+                return "ffn"
+            if n.endswith(".to_qkv") or n.endswith(".to_out"):
+                return "attn_proj"             # qkv + out projections (inside attn_block)
+            if n.endswith(".norm_q") or n.endswith(".norm_k"):
+                return "attn_qknorm"           # q/k RMSNorm (inside attn_block)
+            if n.endswith("proj_in") or n.endswith("proj_out"):
+                return "io_proj"
+            if cls == "RMSNorm":
+                return "norm"                  # input/post layernorms + norm_moe_gen
+            return None
+
+        def mk_pre(mod):
+            def pre(m, inp):
+                if self._prof_steps < self._prof_warmup:
+                    return
+                ev = torch.cuda.Event(enable_timing=True)
+                ev.record()
+                m._prof_start = ev
+            return pre
+
+        def mk_post(cat):
+            def post(m, inp, out):
+                if self._prof_steps < self._prof_warmup or not hasattr(m, "_prof_start"):
+                    return
+                ev = torch.cuda.Event(enable_timing=True)
+                ev.record()
+                self._prof_pending.append((cat, m._prof_start, ev))
+            return post
+
+        nhooked = 0
+        for name, mod in self.named_modules():
+            cat = categorize(name, mod)
+            if cat is not None:
+                mod.register_forward_pre_hook(mk_pre(mod))
+                mod.register_forward_hook(mk_post(cat))
+                nhooked += 1
+
+        def top_post(m, inp, out):
+            step = self._prof_steps
+            self._prof_steps += 1
+            if step < self._prof_warmup:
+                self._prof_pending.clear()
+                return
+            torch.cuda.synchronize()
+            for cat, s, e in self._prof_pending:
+                self._prof_tot[cat] = self._prof_tot.get(cat, 0.0) + s.elapsed_time(e)
+            self._prof_pending.clear()
+            self._prof_tot["_steps"] = self._prof_tot.get("_steps", 0) + 1
+            if self._prof_rank == 0:
+                try:
+                    json.dump(self._prof_tot, open(self._prof_dump, "w"), indent=2)
+                except Exception:
+                    pass
+
+        self.register_forward_hook(top_post)
+        logger.info(
+            "[module-profile] hooked %d submodules; warmup=%d dump=%s",
+            nhooked, self._prof_warmup, self._prof_dump,
+        )
+
+    def _maybe_init_fp4_linear(self):
+        """Opt-in: swap GEN-layer linears to TransformerEngine NVFP4 (4-bit) GEMM.
+
+        Enabled with SGLANG_COSMOS3_FP4_LINEAR=1. Standalone microbench on the
+        real Cosmos3-Super shapes showed NVFP4 GEMM is 2.7-3.6x faster than bf16
+        for all four projections, so by default we swap gate_up_proj, down_proj
+        (FFN) and to_qkv, to_out (attention proj). The loaded bf16 weights are
+        copied into te.Linear (quantized per-forward by the block-scaling recipe);
+        the gen-layer loop runs under fp8_autocast. No-op unless the flag is set.
+        """
+        import os
+        if getattr(self, "_fp4_inited", False):
+            return
+        self._fp4_inited = True
+        self._fp4_enabled = False
+        if os.environ.get("SGLANG_COSMOS3_FP4_LINEAR", "0") != "1":
+            return
+        import transformer_engine.pytorch as te
+        from transformer_engine.common import recipe as terec
+
+        self._te = te
+        self._fp4_recipe = terec.NVFP4BlockScaling()
+        tset = set(
+            os.environ.get("SGLANG_COSMOS3_FP4_TARGETS", "gate_up,down,qkv,out").split(",")
+        )
+        # Selective / hybrid precision: keep some layers and some denoising steps
+        # in BF16 (diffusion is most sensitive at the first/last steps and early
+        # layers). Layer skips are applied here (those layers are never swapped);
+        # step skips are applied per-forward in _fp4_autocast via current_step.
+        n_layers = len(self.gen_layers)
+        skip_first_L = int(os.environ.get("SGLANG_COSMOS3_FP4_SKIP_FIRST_LAYERS", "0"))
+        skip_last_L = int(os.environ.get("SGLANG_COSMOS3_FP4_SKIP_LAST_LAYERS", "0"))
+        self._fp4_skip_first_steps = int(os.environ.get("SGLANG_COSMOS3_FP4_SKIP_FIRST_STEPS", "0"))
+        # Default: keep the last 3 denoising steps in BF16 (they do the final
+        # refinement and are the most quality-sensitive to FP4 quantization).
+        # Override with SGLANG_COSMOS3_FP4_SKIP_LAST_STEPS.
+        self._fp4_skip_last_steps = int(os.environ.get("SGLANG_COSMOS3_FP4_SKIP_LAST_STEPS", "3"))
+
+        class _TEFp4Linear(torch.nn.Module):
+            # Matches the sglang ParallelLinear interface: forward -> (out, bias)
+            def __init__(self, lin):
+                super().__init__()
+                self.lin = lin
+
+            def forward(self, x):
+                return self.lin(x), None
+
+        def swap(parent, attr, want):
+            if want not in tset or not hasattr(parent, attr):
+                return 0
+            old = getattr(parent, attr)
+            w = old.weight  # [out, in]
+            out_f, in_f = w.shape
+            nl = te.Linear(
+                in_f, out_f, bias=False, params_dtype=w.dtype, device=w.device
+            )
+            with torch.no_grad():
+                nl.weight.copy_(w)
+            setattr(parent, attr, _TEFp4Linear(nl))
+            return 1
+
+        n = 0
+        skipped_layers = 0
+        for i, layer in enumerate(self.gen_layers):
+            if i < skip_first_L or i >= n_layers - skip_last_L:
+                skipped_layers += 1
+                continue  # keep this layer's linears in BF16
+            n += swap(layer.mlp, "gate_up_proj", "gate_up")
+            n += swap(layer.mlp, "down_proj", "down")
+            n += swap(layer.cross_attention, "to_qkv", "qkv")
+            n += swap(layer.cross_attention, "to_out", "out")
+        self._fp4_enabled = True
+        logger.info(
+            "[fp4-linear] swapped %d linears to TE NVFP4 (targets=%s); BF16 layers: "
+            "first %d + last %d (=%d/%d kept BF16); BF16 steps: first %d + last %d",
+            n, sorted(tset), skip_first_L, skip_last_L, skipped_layers, n_layers,
+            self._fp4_skip_first_steps, self._fp4_skip_last_steps,
+        )
+
+    def _fp4_autocast(self, current_step=None, num_steps=None):
+        import contextlib
+        if not getattr(self, "_fp4_enabled", False):
+            return contextlib.nullcontext()
+        # Step-level hybrid precision: run the (swapped) te.Linears in BF16 — i.e.
+        # skip the fp8_autocast — on the most quality-sensitive denoising steps.
+        if current_step is not None:
+            sf = getattr(self, "_fp4_skip_first_steps", 0)
+            sl = getattr(self, "_fp4_skip_last_steps", 0)
+            st = int(current_step)
+            if st < sf or (num_steps is not None and st >= int(num_steps) - sl):
+                return contextlib.nullcontext()
+        return self._te.fp8_autocast(enabled=True, fp8_recipe=self._fp4_recipe)
+
+    def _maybe_init_token_prune(self):
+        """Opt-in: feature-norm GEN-token pruning (see cosmos3_token_prune).
+
+        Enabled when SGLANG_COSMOS3_PRUNE_RATIO is in (0, 1). At pruned steps the
+        GEN-layer loop runs on only the top-K kept tokens (per-rank-local under
+        SP); dropped tokens are filled with the previous step's post-loop hidden
+        ('prev') or zero. No-op (byte-identical) unless the ratio is set.
+        """
+        if getattr(self, "_token_prune_inited", False):
+            return
+        self._token_prune_inited = True
+        self._prune_ratio = _tp.prune_ratio()
+        self._token_prune_enabled = self._prune_ratio < 1.0
+        if not self._token_prune_enabled:
+            return
+        self._prune_method = _tp.prune_method()
+        self._prune_step_set = _tp.prune_steps()
+        self._prune_comp = _tp.prune_compensation()
+        # prev post-loop hidden, per cache_key (cond/uncond are separate calls)
+        self._prune_prev_hidden: dict[str, torch.Tensor] = {}
+        logger.info(
+            "[token-prune] enabled: ratio=%.4f method=%s comp=%s steps=%s",
+            self._prune_ratio,
+            self._prune_method,
+            self._prune_comp,
+            "all-but-0" if self._prune_step_set is None else sorted(self._prune_step_set),
+        )
+
+    def _maybe_prune_before_loop(self, hidden_gen, cache_key, current_step):
+        """Select kept GEN tokens for this step. Returns ``(keep, prev_full, S)``
+        where ``keep`` is None on a full (un-pruned) step. ``S`` is the full
+        local token count (needed to scatter back); ``prev_full`` is the 'prev'
+        compensation buffer for this cache_key (None for 'zero')."""
+        if not getattr(self, "_token_prune_enabled", False):
+            return None, None, 0
+        step = int(current_step or 0)
+        if self._prune_step_set is not None:
+            do_prune = step in self._prune_step_set
+        else:
+            do_prune = step != 0  # step 0 always full -> seeds the 'prev' buffer
+        S = int(hidden_gen.shape[1])
+        if not do_prune:
+            return None, None, S
+        keep_n = max(1, min(S, int(round(S * self._prune_ratio))))
+        if keep_n >= S:
+            return None, None, S
+        prev_full = self._prune_prev_hidden.get(cache_key)
+        if self._prune_comp == "prev":
+            # 'prev' needs a seeded, shape-matching buffer; else run full.
+            if prev_full is None or int(prev_full.shape[1]) != S:
+                return None, None, S
+        keep = _tp.keep_indices(
+            self._prune_method, S, self._prune_ratio, hidden_gen, prev_full
+        )
+        if int(keep.shape[0]) >= S:
+            return None, None, S
+        if not getattr(self, "_prune_logged_once", False):
+            self._prune_logged_once = True
+            logger.info(
+                "[token-prune] active: step=%d cache=%s kept=%d/%d local tokens "
+                "(method=%s, comp=%s)",
+                step, cache_key, int(keep.shape[0]), S,
+                self._prune_method, self._prune_comp,
+            )
+        return keep, prev_full, S
+
+    def _maybe_scatter_after_loop(self, hidden_gen, keep, prev_full, full_S, cache_key):
+        """Scatter the K-token post-loop hidden back to full ``S`` (dropped
+        tokens take ``prev_full`` or zero), and refresh the 'prev' buffer. On a
+        full step (keep is None) just refreshes the buffer."""
+        if not getattr(self, "_token_prune_enabled", False):
+            return hidden_gen
+        if keep is None:
+            # Full step: store this step's full post-loop hidden for next-step
+            # 'prev' compensation (also seeds the buffer on step 0).
+            self._prune_prev_hidden[cache_key] = hidden_gen.detach()
+            return hidden_gen
+        B, _, C = hidden_gen.shape
+        if self._prune_comp == "prev" and prev_full is not None:
+            base = prev_full.to(device=hidden_gen.device, dtype=hidden_gen.dtype).clone()
+        else:
+            base = hidden_gen.new_zeros((B, full_S, C))
+        idx = keep.view(1, -1, 1).expand(B, int(keep.shape[0]), C)
+        # Out-of-place scatter so FP4/TE inference tensors don't trip the
+        # version-counter guard (matches the LTX2 reference).
+        full = base.scatter(1, idx, hidden_gen)
+        self._prune_prev_hidden[cache_key] = full.detach()
+        return full
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -1110,6 +1385,10 @@ class Cosmos3OmniTransformer(CachableDiT):
         """
         if text_ids is None or text_mask is None:
             raise ValueError("Cosmos3 requires text_ids and text_mask to be passed")
+
+        self._maybe_init_module_profiling()
+        self._maybe_init_fp4_linear()
+        self._maybe_init_token_prune()
 
         batch_size, C, T, H, W = hidden_states.shape
         Hp, Wp, _, _ = self._pad_to_patch_size(H, W)
@@ -1233,16 +1512,27 @@ class Cosmos3OmniTransformer(CachableDiT):
             # fused add+rmsnorm path instead of separate add + norm kernels.
             cached_kv_for_key = self.cached_kv[cache_key]
             residual: torch.Tensor | None = None
-            for i, layer in enumerate(self.gen_layers):
-                k_und, v_und = cached_kv_for_key[i]
-                hidden_gen, residual = layer(
-                    hidden_gen,
-                    k_und,
-                    v_und,
-                    cos_gen,
-                    sin_gen,
-                    residual=residual,
-                )
+            # GEN-token pruning: select kept tokens and run the layer stack on
+            # the K-token subsequence only. cos/sin (RoPE) are gathered to match;
+            # the UND K/V prefix stays full. No-op unless pruning is enabled.
+            prune_keep, prune_prev, prune_full_S = self._maybe_prune_before_loop(
+                hidden_gen, cache_key, current_step
+            )
+            if prune_keep is not None:
+                hidden_gen = hidden_gen.index_select(1, prune_keep)
+                cos_gen = cos_gen.index_select(1, prune_keep)
+                sin_gen = sin_gen.index_select(1, prune_keep)
+            with self._fp4_autocast(current_step, num_inference_steps):
+                for i, layer in enumerate(self.gen_layers):
+                    k_und, v_und = cached_kv_for_key[i]
+                    hidden_gen, residual = layer(
+                        hidden_gen,
+                        k_und,
+                        v_und,
+                        cos_gen,
+                        sin_gen,
+                        residual=residual,
+                    )
 
             # Collapse the trailing residual carry. RMSNorm and the linear
             # projection that follow are per-token, so we run them on the
@@ -1250,6 +1540,13 @@ class Cosmos3OmniTransformer(CachableDiT):
             # output. With patch_latent_dim ~= hidden_size / 21 for cosmos3,
             # this cuts the post-loop SP collective bandwidth ~21x.
             hidden_gen = hidden_gen + residual
+            # GEN-token pruning: scatter the K-token result back to full S
+            # (dropped tokens take the 'prev' post-loop hidden or zero) and
+            # refresh the per-cache_key 'prev' buffer. Runs before the TeaCache
+            # store so the cache sees the full-S hidden.
+            hidden_gen = self._maybe_scatter_after_loop(
+                hidden_gen, prune_keep, prune_prev, prune_full_S, cache_key
+            )
             if self._cosmos3_teacache is not None and original_hidden_gen is not None:
                 self._cosmos3_teacache.store(
                     teacache_decision,

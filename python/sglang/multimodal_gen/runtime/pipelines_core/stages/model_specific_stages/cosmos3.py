@@ -480,10 +480,24 @@ class Cosmos3DenoisingStage(PipelineStage):
             torch._dynamo.config.cache_size_limit = max(
                 getattr(torch._dynamo.config, "cache_size_limit", 64), 128
             )
+            # dynamic=True trips Dynamo on Cosmos3-Super at sp>1 with
+            # "AsPythonConstantNotImplementedError: SymNodeVariable() is not a
+            # constant" (a symbolic dim used where a constant is required, around
+            # the qk-norm custom Function / qkv split). Per-generation shapes are
+            # fixed, so specialize statically (dynamic=False); the few shape
+            # variants — cond/uncond, first-step residual carry — fit under the
+            # 128 cache_size_limit set above.
+            # Compile mode is env-tunable: "reduce-overhead" captures CUDA graphs
+            # to eliminate per-kernel launch overhead (the biggest win once the
+            # gen block compiles break-free, i.e. sp=1 + traceable qk-norm). It
+            # is only safe when the compiled region has no graph breaks / no
+            # collective inside the captured graph, so it stays opt-in.
+            import os as _os
+            _mode = _os.environ.get("SGLANG_COSMOS3_COMPILE_MODE", "default")
             compile_kwargs = {
-                "mode": "default",
+                "mode": _mode,
                 "fullgraph": False,
-                "dynamic": True,
+                "dynamic": False,
             }
 
         gen_layers = getattr(transformer, "gen_layers", None)

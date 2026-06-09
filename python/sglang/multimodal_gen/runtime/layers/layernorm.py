@@ -753,9 +753,15 @@ def apply_qk_norm(
     q_eps = q_norm.variance_epsilon
     k_eps = k_norm.variance_epsilon
     # Only try fused path on CUDA and when it won't introduce implicit copies.
+    # The fused inplace kernel is a custom autograd.Function whose __call__
+    # Dynamo cannot trace -> graph break under torch.compile, and its in-place
+    # mutation blocks CUDA-graph capture. When compiling, skip it and fall
+    # through to the RMSNorm-module path (a CustomOp with a pure-torch forward
+    # that Inductor fuses with the surrounding RoPE).
     if (
         _is_cuda
         and allow_inplace
+        and not torch.compiler.is_compiling()
         and (q_eps == k_eps)
         and q.dtype in (torch.float16, torch.bfloat16)
         and q_norm.weight.dtype == q.dtype

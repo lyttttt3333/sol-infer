@@ -376,8 +376,19 @@ EOF
     --output-file-path "$out_video"
     --perf-dump-path "$perf_json"
   )
+  # Optional I2V image conditioning (used by the Super-Text2Image -> Super-Image2Video cascade).
+  if [[ -n "${IMAGE_PATH:-}" ]]; then
+    cmd+=(--image-path "$IMAGE_PATH")
+  fi
+  # Optional CPU-offload control. The 64b Super transformer is ~118 GB; with the
+  # default offload ON, each of the 4 sequence-parallel ranks pins a full copy in
+  # CPU RAM (~4x118 GB) and the job is OOM-killed. Disable it so weights live on
+  # the GPU (118 GB fits in a GB200's 189 GB).
+  if [[ -n "${DIT_CPU_OFFLOAD:-}" ]]; then
+    cmd+=(--dit-cpu-offload "$DIT_CPU_OFFLOAD")
+  fi
 
-  echo "[run] model=$model_size prompt=$prompt_idx variant=$variant gpus=$num_gpus scheduler_port=$scheduler_port master_port=$master_port"
+  echo "[run] model=$model_size prompt=$prompt_idx variant=$variant gpus=$num_gpus scheduler_port=$scheduler_port master_port=$master_port image=${IMAGE_PATH:-none}"
   if [[ "$DRY_RUN" == "1" ]]; then
     printf '%q ' "${cmd[@]}"
     printf '\n'
