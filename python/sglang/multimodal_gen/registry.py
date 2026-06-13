@@ -73,6 +73,10 @@ from sglang.multimodal_gen.configs.pipeline_configs.qwen_image import (
     QwenImagePipelineConfig,
 )
 from sglang.multimodal_gen.configs.pipeline_configs.sana import SanaPipelineConfig
+from sglang.multimodal_gen.configs.pipeline_configs.sana_video import (
+    SanaVideo720PPipelineConfig,
+    SanaVideoPipelineConfig,
+)
 from sglang.multimodal_gen.configs.pipeline_configs.stablediffusion3 import (
     StableDiffusion3PipelineConfig,
 )
@@ -121,6 +125,7 @@ from sglang.multimodal_gen.configs.sample.qwenimage import (
     QwenImageSamplingParams,
 )
 from sglang.multimodal_gen.configs.sample.sana import SanaSamplingParams
+from sglang.multimodal_gen.configs.sample.sana_video import SanaVideoSamplingParams
 from sglang.multimodal_gen.configs.sample.stablediffusion3 import (
     StableDiffusion3SamplingParams,
 )
@@ -645,6 +650,24 @@ def _register_configs():
     _PIPELINE_CONFIG_REGISTRY.setdefault(
         "LTX2TwoStageHQPipeline",
         (LTX2PipelineConfig, LTX23HQSamplingParams),
+    )
+
+    # SANA-Video (text-to-video)
+    register_configs(
+        sampling_param_cls=SanaVideoSamplingParams,
+        pipeline_config_cls=SanaVideoPipelineConfig,
+        hf_model_paths=["Efficient-Large-Model/SANA-Video_2B_480p_diffusers"],
+        model_detectors=[
+            lambda path: "sana-video" in path.lower() and "720" not in path.lower(),
+        ],
+    )
+    register_configs(
+        sampling_param_cls=SanaVideoSamplingParams,
+        pipeline_config_cls=SanaVideo720PPipelineConfig,
+        hf_model_paths=["Efficient-Large-Model/SANA-Video_2B_720p_diffusers"],
+        model_detectors=[
+            lambda path: "sana-video" in path.lower() and "720" in path.lower(),
+        ],
     )
 
     # Hunyuan
