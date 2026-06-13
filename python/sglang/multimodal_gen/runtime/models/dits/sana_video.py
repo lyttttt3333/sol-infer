@@ -446,20 +446,30 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         self._tc_thresh = float(os.environ.get("SGLANG_SANA_TEACACHE_THRESH", "0") or 0.0)
         _co = os.environ.get("SGLANG_SANA_TEACACHE_COEFFS", "")
         self._tc_coeffs = [float(x) for x in _co.split(",")] if _co else [1.0, 0.0]
+        # Late-step skip (fine-grained, composition-preserving): compute steps
+        # [0, skip_from), reuse the residual for the rest. 0 = disabled. Unlike
+        # the threshold knob (quantized; mildest is every-other-step -> a
+        # different sample), this keeps early/mid steps (which set the layout) so
+        # the output stays close to the dense sample; only late refinement is dropped.
+        self._tc_skip_from = int(os.environ.get("SGLANG_SANA_SKIP_FROM_STEP", "0") or 0)
         self._tc_prev_mod = None
         self._tc_prev_residual = None
         self._tc_accum = 0.0
         self._tc_prev_t = None
+        self._tc_step = 0
 
-    def _tc_should_calc(self, mod_inp, t_scalar):
-        """Accumulate rescaled rel-L1 of the block-0 modulated input; skip (reuse
-        cached residual) while under threshold. Resets per generation when the
-        timestep jumps back up (e.g. warmup run -> real run)."""
+    def _tc_reset_if_new_gen(self, t_scalar):
+        # New generation when the timestep jumps back up (e.g. warmup -> real run).
         if self._tc_prev_t is None or t_scalar > self._tc_prev_t + 1e-4:
             self._tc_prev_mod = None
             self._tc_prev_residual = None
             self._tc_accum = 0.0
+            self._tc_step = 0
         self._tc_prev_t = t_scalar
+
+    def _tc_thr_decide(self, mod_inp):
+        """Threshold mode: accumulate rescaled rel-L1 of the block-0 modulated
+        input; recompute when it crosses the threshold, else reuse the residual."""
         if self._tc_prev_mod is None:
             self._tc_prev_mod = mod_inp.detach()
             return True
@@ -468,7 +478,7 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         rel_l1 = float((diff / denom).item())
         self._tc_prev_mod = mod_inp.detach()
         rescaled = 0.0
-        for c in self._tc_coeffs:  # horner, coeffs highest-degree-first (np.poly1d order)
+        for c in self._tc_coeffs:  # horner, highest-degree-first
             rescaled = rescaled * rel_l1 + c
         self._tc_accum += rescaled
         if self._tc_accum >= self._tc_thresh:
@@ -534,16 +544,25 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         )
         encoder_hidden_states = self.caption_norm(encoder_hidden_states)
 
-        tc_on = self._tc_thresh > 0.0
+        thr_on = self._tc_thresh > 0.0
+        late_on = self._tc_skip_from > 0
         should_calc = True
-        if tc_on:
-            b0 = self.transformer_blocks[0]
-            shift0, scale0 = (
-                b0.scale_shift_table[None, None]
-                + timestep_mod.reshape(batch_size, timestep_mod.shape[1], 6, -1)
-            ).unbind(dim=2)[:2]
-            mod_inp = b0.norm1(hidden_states) * (1 + scale0) + shift0
-            should_calc = self._tc_should_calc(mod_inp, float(timestep.flatten()[0].item()))
+        if thr_on or late_on:
+            self._tc_reset_if_new_gen(float(timestep.flatten()[0].item()))
+            if late_on:
+                # run early/mid steps (set composition); skip late refinement steps
+                should_calc = (self._tc_step < self._tc_skip_from) or (
+                    self._tc_prev_residual is None
+                )
+            else:
+                b0 = self.transformer_blocks[0]
+                shift0, scale0 = (
+                    b0.scale_shift_table[None, None]
+                    + timestep_mod.reshape(batch_size, timestep_mod.shape[1], 6, -1)
+                ).unbind(dim=2)[:2]
+                mod_inp = b0.norm1(hidden_states) * (1 + scale0) + shift0
+                should_calc = self._tc_thr_decide(mod_inp)
+            self._tc_step += 1
 
         if should_calc:
             hidden_before = hidden_states
@@ -558,7 +577,7 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
                     rotary_emb,
                     encoder_attention_mask=encoder_attention_mask,
                 )
-            if tc_on:
+            if thr_on or late_on:
                 self._tc_prev_residual = (hidden_states - hidden_before).detach()
         else:
             hidden_states = hidden_states + self._tc_prev_residual

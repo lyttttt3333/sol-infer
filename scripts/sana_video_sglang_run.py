@@ -35,6 +35,9 @@ def main():
                     help="enable selective W4A4 NVFP4 on attn GEMMs")
     ap.add_argument("--nvfp4-layers", default="",
                     help="which blocks get NVFP4 (e.g. '0-9'); default all")
+    ap.add_argument("--skip-from", type=int, default=0,
+                    help="late-step skip: run steps [0,N) fully, reuse residual after (0=off); "
+                         "composition-preserving fine-grained speed knob")
     args = ap.parse_args()
     if args.label:
         args.output = f"{args.output}_{args.label}"
@@ -46,6 +49,8 @@ def main():
         _os.environ["SGLANG_SANA_NVFP4"] = "1"
     if args.nvfp4_layers:
         _os.environ["SGLANG_SANA_NVFP4_LAYERS"] = args.nvfp4_layers
+    if args.skip_from:
+        _os.environ["SGLANG_SANA_SKIP_FROM_STEP"] = str(args.skip_from)
 
     print(f"==== STAGE 1: import new SANA-Video modules ====", flush=True)
     try:
