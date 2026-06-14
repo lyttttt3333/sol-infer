@@ -68,6 +68,81 @@ class Fp4Linear(nn.Module):
         return out
 
 
+class Fp4Conv1x1(nn.Module):
+    """W4A4 NVFP4 drop-in for a 1x1 nn.Conv2d (== GEMM over channels). Only the
+    conv-FFN `conv_inverted` (high N/K) is worth this — microbench: fp4 2.26x bare
+    vs bf16, whereas conv_point/attn are net-negative (low N/K, quant overhead)."""
+
+    def __init__(self, conv: nn.Conv2d):
+        super().__init__()
+        from sglang.jit_kernel.nvfp4 import scaled_fp4_quant
+
+        w = conv.weight.data.to(torch.bfloat16)  # [out, in, 1, 1]
+        self.out_ch, self.in_ch = w.shape[0], w.shape[1]
+        assert self.in_ch % 16 == 0, f"nvfp4 needs in%16==0, got {self.in_ch}"
+        w2 = w.reshape(self.out_ch, self.in_ch)
+        self.w_gs = _global_scale(w2)
+        self.w_fp4, self.w_scale = scaled_fp4_quant(w2, self.w_gs)
+        self.bias = conv.bias
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        from sglang.jit_kernel.nvfp4 import cutlass_scaled_fp4_mm, scaled_fp4_quant
+
+        N, _, H, W = x.shape
+        x2 = x.permute(0, 2, 3, 1).reshape(-1, self.in_ch).to(torch.bfloat16)
+        a_gs = _global_scale(x2)
+        x_fp4, x_scale = scaled_fp4_quant(x2, a_gs)
+        alpha = (1.0 / (a_gs * self.w_gs)).to(torch.float32)
+        out = cutlass_scaled_fp4_mm(x_fp4, self.w_fp4, x_scale, self.w_scale, alpha, torch.bfloat16)
+        out = out.reshape(N, H, W, self.out_ch).permute(0, 3, 1, 2)
+        if self.bias is not None:
+            out = out + self.bias.to(out.dtype).view(1, -1, 1, 1)
+        return out
+
+
+class Fp8Conv1x1(nn.Module):
+    """W8A8 fp8-e4m3 drop-in for a 1x1 nn.Conv2d (microbench: fp8 1.38x on
+    conv_inverted; safer than fp4)."""
+
+    def __init__(self, conv: nn.Conv2d):
+        super().__init__()
+        w = conv.weight.data.to(torch.bfloat16)
+        self.out_ch, self.in_ch = w.shape[0], w.shape[1]
+        w2 = w.reshape(self.out_ch, self.in_ch)
+        self.w_s = (w2.abs().amax() / _FP8_MAX).clamp_min(1e-6).to(torch.float32)
+        self.w_fp8 = (w2 / self.w_s).to(torch.float8_e4m3fn)  # [out, in]
+        self.bias = conv.bias
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        N, _, H, W = x.shape
+        x2 = x.permute(0, 2, 3, 1).reshape(-1, self.in_ch).to(torch.bfloat16)
+        a_s = (x2.abs().amax() / _FP8_MAX).clamp_min(1e-6).to(torch.float32)
+        xq = (x2 / a_s).to(torch.float8_e4m3fn)
+        out = torch._scaled_mm(xq, self.w_fp8.t(), scale_a=a_s, scale_b=self.w_s, out_dtype=torch.bfloat16)
+        out = out.reshape(N, H, W, self.out_ch).permute(0, 3, 1, 2)
+        if self.bias is not None:
+            out = out + self.bias.to(out.dtype).view(1, -1, 1, 1)
+        return out
+
+
+def maybe_swap_ffn_lowprec(transformer) -> int:
+    """Swap each block's conv-FFN `conv_inverted` (1x1, the high-N/K GEMM) to
+    fp4/fp8 per SGLANG_SANA_FFN_LP in {fp4, fp8}. OFF == baseline."""
+    mode = os.environ.get("SGLANG_SANA_FFN_LP", "").strip().lower()
+    if mode not in ("fp4", "fp8"):
+        return 0
+    cls = Fp4Conv1x1 if mode == "fp4" else Fp8Conv1x1
+    n = 0
+    for blk in transformer.transformer_blocks:
+        ff = getattr(blk, "ff", None)
+        ci = getattr(ff, "conv_inverted", None) if ff is not None else None
+        if isinstance(ci, nn.Conv2d):
+            ff.conv_inverted = cls(ci)
+            n += 1
+    logger.info(f"[SANA-Video FFN {mode}] swapped {n} conv_inverted 1x1 convs")
+    return n
+
+
 def _parse_layers(spec: str, n: int) -> set[int]:
     if not spec or spec.strip().lower() in ("", "all"):
         return set(range(n))
