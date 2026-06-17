@@ -23,7 +23,6 @@ from sglang.multimodal_gen.runtime.cache import (
     get_scm_mask,
     refresh_context_on_transformer,
 )
-from sglang.multimodal_gen.runtime.cache.cosmos3_pab import install_cosmos3_pab
 from sglang.multimodal_gen.runtime.distributed import get_local_torch_device
 from sglang.multimodal_gen.runtime.distributed.communication_op import (
     cfg_model_parallel_all_reduce,
@@ -611,7 +610,6 @@ class Cosmos3DenoisingStage(PipelineStage):
     def _maybe_enable_request_acceleration(
         self, num_inference_steps: int, batch: Req, server_args: ServerArgs
     ) -> None:
-        install_cosmos3_pab(self.transformer)
         self._maybe_enable_cache_dit(num_inference_steps, batch)
         if server_args is not None:
             self._maybe_enable_torch_compile(self.transformer, server_args)
@@ -651,13 +649,6 @@ class Cosmos3DenoisingStage(PipelineStage):
         """
         if current_timestep is None:
             current_timestep = int(timestep.flatten()[0].item())
-        pab = getattr(self.transformer, "_cosmos3_pab", None)
-        if pab is not None:
-            pab.begin_step(
-                step=current_timestep,
-                num_inference_steps=num_inference_steps,
-                cache_key=cache_key,
-            )
         with set_forward_context(current_timestep=current_timestep, attn_metadata=None):
             return self.transformer(
                 hidden_states=latents,
@@ -858,9 +849,6 @@ class Cosmos3DenoisingStage(PipelineStage):
         teacache = getattr(self.transformer, "_cosmos3_teacache", None)
         if teacache is not None:
             self.log_info("Cosmos3 TeaCache stats: %s", teacache.stats_summary())
-        pab = getattr(self.transformer, "_cosmos3_pab", None)
-        if pab is not None:
-            self.log_info("Cosmos3 PAB stats: %s", pab.stats_summary())
         self.log_info("Denoising complete")
         return batch
 
