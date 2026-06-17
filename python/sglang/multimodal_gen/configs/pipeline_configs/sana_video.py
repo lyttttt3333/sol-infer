@@ -115,3 +115,15 @@ class SanaVideo720PPipelineConfig(SanaVideoPipelineConfig):
         self.vae_config = LTXVideoVAEConfig()
         self.vae_config.load_encoder = False
         self.vae_config.load_decoder = True
+
+    def preprocess_decoding(self, latents, server_args=None, vae=None):
+        # SANA-Video 720p uses the LTX-2 (AutoencoderKLLTX2Video) VAE, whose
+        # per-channel latent denormalization is applied EXTERNALLY by the
+        # reference SanaVideoPipeline (latents = latents * latents_std +
+        # latents_mean, using the 128-ch stats stored in the checkpoint). The
+        # generic decode stage only applies scaling_factor (=1.0, a no-op), so
+        # without this the decoder receives un-denormalized latents -> visually
+        # wrong output. Mirrors DecodingAVStage._ltx2_should_externally_denorm.
+        std = vae.latents_std.view(1, -1, 1, 1, 1).to(latents)
+        mean = vae.latents_mean.view(1, -1, 1, 1, 1).to(latents)
+        return latents * std + mean
