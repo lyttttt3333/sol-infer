@@ -55,7 +55,6 @@ from sglang.multimodal_gen.runtime.distributed.parallel_state import get_dit_gro
 if _CACHE_DIT_AVAILABLE:
     # Side-effect import: register SGLang-owned BlockAdapters before cache-dit
     # checks BlockAdapterRegister support.
-    from sglang.multimodal_gen.runtime.cache import cosmos3_block_adapter  # noqa: F401
     from sglang.multimodal_gen.runtime.cache import ltx2_block_adapter  # noqa: F401
 
 _original_similarity = None
