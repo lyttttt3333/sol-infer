@@ -397,63 +397,6 @@ class SanaVideoTransformerBlock(nn.Module):
         return hidden_states
 
 
-class _TaylorSeerState:
-    """Finite-difference Taylor forecast of a feature across denoise steps
-    (ported from cache_dit TaylorSeerState). order = n_derivatives + 1.
-
-    On computed steps it maintains a difference table dY (dY[0]=Y,
-    dY[i+1]=(dY[i]-dY_prev[i])/window); on skipped steps it forecasts via the
-    Taylor series Y_hat = sum_i dY[i] * elapsed^i / i!. n_derivatives=1 = linear
-    extrapolation, 2 = quadratic, vs the order-0 'hold constant' of plain reuse.
-    """
-
-    def __init__(self, n_derivatives=1, max_warmup_steps=3, skip_interval_steps=2):
-        self.n_derivatives = n_derivatives
-        self.order = n_derivatives + 1
-        self.max_warmup_steps = max_warmup_steps
-        self.skip_interval_steps = max(1, skip_interval_steps)
-        self.current_step = -1
-        self.last_non_approximated_step = -1
-        self.dY_prev = [None] * self.order
-        self.dY_current = [None] * self.order
-
-    def mark_step_begin(self):
-        self.current_step += 1
-
-    def should_compute(self):
-        s = self.current_step
-        return (
-            s < self.max_warmup_steps
-            or (s - self.max_warmup_steps + 1) % self.skip_interval_steps == 0
-        )
-
-    def _derivative(self, Y):
-        dY = [None] * self.order
-        dY[0] = Y
-        window = max(1, self.current_step - self.last_non_approximated_step)
-        for i in range(self.n_derivatives):
-            if self.dY_prev[i] is not None and self.current_step > 1:
-                dY[i + 1] = (dY[i] - self.dY_prev[i]) / window
-            else:
-                break
-        return dY
-
-    def update(self, Y):
-        self.dY_prev = self.dY_current
-        self.dY_current = self._derivative(Y)
-        self.last_non_approximated_step = self.current_step
-
-    def approximate(self):
-        elapsed = self.current_step - self.last_non_approximated_step
-        out = None
-        for i, d in enumerate(self.dY_current):
-            if d is None:
-                break
-            term = d if i == 0 else (1.0 / math.factorial(i)) * d * (elapsed**i)
-            out = term if out is None else out + term
-        return out
-
-
 class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
 
     _fsdp_shard_conditions = [
@@ -518,47 +461,19 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
 
         self.layer_names = ["transformer_blocks"]
 
-        # --- TeaCache toggle (timestep-embedding-aware step skipping) ---
-        # thresh<=0 => OFF == byte-identical baseline; higher => more skips (跳步幅度).
-        # All per-step cache state is keyed by CFG branch (0=first call of a step,
-        # 1=second) because sglang runs CFG unbatched (2 forward calls/step); cond
-        # and uncond must not contaminate each other's rel-L1 / cached residual.
-        self._tc_thresh = float(os.environ.get("SGLANG_SANA_TEACACHE_THRESH", "0") or 0.0)
-        _co = os.environ.get("SGLANG_SANA_TEACACHE_COEFFS", "")
-        # Calibrated input-relL1 -> output-relL1 polynomial (highest-degree-first,
-        # Horner). Default [1,0]=identity == UNcalibrated; fit per model via the
-        # SGLANG_SANA_TEACACHE_CALIB collection pass + scripts/fit_sana_teacache.py.
-        self._tc_coeffs = [float(x) for x in _co.split(",")] if _co else [1.0, 0.0]
-        # Late-step skip (fine-grained, composition-preserving): compute steps
-        # [0, skip_from) per branch, reuse the residual for the rest. 0 = disabled.
-        # Keeps early/mid steps (which set the layout) so the output stays close to
-        # the dense sample; only late refinement is dropped.
-        self._tc_skip_from = int(os.environ.get("SGLANG_SANA_SKIP_FROM_STEP", "0") or 0)
-        # Calibration-collection: when set to a path, run dense and append
-        # "branch input_relL1 output_relL1" per step for the offline polynomial fit.
-        self._tc_calib = os.environ.get("SGLANG_SANA_TEACACHE_CALIB", "")
-        if self._tc_calib:
-            open(self._tc_calib, "w").close()  # truncate once at build
-        self._tc_prev_mod = {}
-        self._tc_prev_residual = {}  # per-branch: calibration + first-compute check
-        self._tc_prev_b0 = {}  # calib: first-block OUTPUT (FBCache-style signal)
+        # --- EasyCache step-skip (the only SANA acceleration). Per-step cache
+        # state is keyed by CFG branch (0=first call of a step, 1=second) because
+        # sglang runs CFG unbatched (2 forward calls/step); cond and uncond must
+        # not contaminate each other's cached residual. ---
         # Shared (common-mode) residual reused on skipped steps. CFG is unbatched
         # and both branches get the SAME latent x_t, so reusing one shared residual
         # makes the guidance term s*(R-R)=0 vanish on skipped steps -- riding the
         # established composition. A per-branch residual would instead re-inject a
         # 6x-amplified STALE guidance term -> high-freq artifacts. Shared is correct.
         self._tc_reuse_residual = None
-        self._tc_accum = {}
         self._tc_step = {}
         self._tc_prev_t = None
         self._cache_prev_t = None  # CFG-branch detection (shared-timestep)
-        # TaylorSeer: forecast the block-stack residual on skipped steps via an
-        # order-N finite-difference Taylor expansion (0 = off). Per-branch state.
-        # Compute the first WARMUP steps then every INTERVAL-th step; forecast rest.
-        self._ts_order = int(os.environ.get("SGLANG_SANA_TAYLORSEER_ORDER", "0") or 0)
-        self._ts_warmup = int(os.environ.get("SGLANG_SANA_TAYLORSEER_WARMUP", "3") or 3)
-        self._ts_interval = int(os.environ.get("SGLANG_SANA_TAYLORSEER_INTERVAL", "2") or 2)
-        self._ts_states = {}
         # EasyCache: calibration-free adaptive skip (ported from the LTX-2 stage1
         # cache core). Measures the online input->output transformation rate K, then
         # estimates per-step relative output change ~= K * input_change / out_norm,
@@ -583,13 +498,8 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
     def _tc_reset_if_new_gen(self, t_scalar):
         # New generation when the timestep jumps back up (e.g. warmup -> real run).
         if self._tc_prev_t is None or t_scalar > self._tc_prev_t + 1e-4:
-            self._tc_prev_mod = {}
-            self._tc_prev_residual = {}
-            self._tc_prev_b0 = {}
             self._tc_reuse_residual = None
-            self._tc_accum = {}
             self._tc_step = {}
-            self._ts_states = {}
             self._ec_x_prev = None
             self._ec_out_prev = None
             self._ec_out_prev_norm = None
@@ -598,47 +508,6 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
             self._ec_run = True
             self._cache_prev_t = None
         self._tc_prev_t = t_scalar
-
-    def _tc_thr_decide(self, branch, mod_inp):
-        """Threshold mode (per CFG branch): accumulate the calibrated rescale of
-        the block-0 modulated-input rel-L1; recompute when it crosses the
-        threshold, else reuse this branch's cached residual."""
-        prev = self._tc_prev_mod.get(branch)
-        self._tc_prev_mod[branch] = mod_inp.detach()
-        if prev is None:
-            self._tc_accum[branch] = 0.0
-            return True
-        diff = (mod_inp - prev).abs().mean()
-        denom = prev.abs().mean().clamp_min(1e-9)
-        rel_l1 = float((diff / denom).item())
-        rescaled = 0.0
-        for c in self._tc_coeffs:  # horner, highest-degree-first
-            rescaled = rescaled * rel_l1 + c
-        acc = self._tc_accum.get(branch, 0.0) + rescaled
-        if acc >= self._tc_thresh:
-            self._tc_accum[branch] = 0.0
-            return True
-        self._tc_accum[branch] = acc
-        return False
-
-    def _tc_calib_record(self, branch, mod_inp, block0_out, residual):
-        """Calibration: append (branch, input_relL1, block0out_relL1, output_relL1)
-        for this step vs the previous computed step of the same branch. Runs under
-        dense so the rows describe the true per-step drift. Two candidate cheap
-        signals are logged: block-0 *input* (TeaCache) and block-0 *output*
-        (FBCache) -- the fit script reports which actually predicts output drift."""
-
-        def rel(a, b):
-            return float(((a - b).abs().mean() / b.abs().mean().clamp_min(1e-9)).item())
-
-        pm = self._tc_prev_mod.get(branch)
-        pb = self._tc_prev_b0.get(branch)
-        pr = self._tc_prev_residual.get(branch)
-        if pm is not None and pb is not None and pr is not None:
-            with open(self._tc_calib, "a") as f:
-                f.write(f"{branch} {rel(mod_inp, pm):.8f} {rel(block0_out, pb):.8f} {rel(residual, pr):.8f}\n")
-        self._tc_prev_mod[branch] = mod_inp.detach()
-        self._tc_prev_b0[branch] = block0_out.detach()
 
     def _ec_decide(self, step, x):
         """EasyCache skip decision (shared per step). Returns run_blocks: compute
@@ -717,34 +586,8 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         return hidden_states
 
     @torch.compiler.disable
-    def _run_blocks_capture0(self, *args):
-        # Calibration only (eager, never stacked with compile): also return the
-        # first block's output for the FBCache-signal probe.
-        hidden_states = args[0]
-        block0_out = None
-        for bi, block in enumerate(self.transformer_blocks):
-            hidden_states = block(
-                hidden_states,
-                args[1],
-                args[2],
-                args[3],
-                args[4],
-                args[5],
-                args[6],
-                encoder_attention_mask=args[7],
-            )
-            if bi == 0:
-                block0_out = hidden_states
-        return hidden_states, block0_out
-
-    @torch.compiler.disable
     def _cache_decide(self, timestep, hidden_states, timestep_mod, batch_size):
-        """Eager (dynamo-opaque) per-step skip decision + state bookkeeping."""
-        ts_on = self._ts_order > 0
-        thr_on = self._tc_thresh > 0.0
-        late_on = self._tc_skip_from > 0
-        ec_on = self._ec_thresh > 0.0
-        calib_on = bool(self._tc_calib)
+        """Eager (dynamo-opaque) per-step EasyCache skip decision + bookkeeping."""
         t_now = float(timestep.flatten()[0].item())
         self._tc_reset_if_new_gen(t_now)
         # CFG is unbatched: cond & uncond of a step share the timestep.
@@ -753,62 +596,26 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         step = self._tc_step.get(branch, 0)
         self._tc_step[branch] = step + 1
 
-        run_blocks = True
-        ts_state = None
-        mod_inp = None
-        if ts_on:
-            ts_state = self._ts_states.get(branch)
-            if ts_state is None:
-                ts_state = _TaylorSeerState(self._ts_order, self._ts_warmup, self._ts_interval)
-                self._ts_states[branch] = ts_state
-            ts_state.mark_step_begin()
-            run_blocks = ts_state.should_compute()
-        elif late_on:
-            run_blocks = (step < self._tc_skip_from) or (self._tc_reuse_residual is None)
-        elif ec_on:
-            if branch == 0:
-                run_blocks = self._ec_decide(step, hidden_states)
-                self._ec_run = run_blocks
-                if self._ec_debug:
-                    print(f"EC step={step} run={int(run_blocks)} "
-                          f"cum={self._ec_cumulative:.4f} K={self._ec_rate}", flush=True)
-            else:
-                run_blocks = self._ec_run
-        elif thr_on or calib_on:
-            b0 = self.transformer_blocks[0]
-            shift0, scale0 = (
-                b0.scale_shift_table[None, None]
-                + timestep_mod.reshape(batch_size, timestep_mod.shape[1], 6, -1)
-            ).unbind(dim=2)[:2]
-            mod_inp = b0.norm1(hidden_states) * (1 + scale0) + shift0
-            run_blocks = True if calib_on else self._tc_thr_decide(branch, mod_inp)
-        return {
-            "run_blocks": run_blocks, "branch": branch, "ts_state": ts_state,
-            "mod_inp": mod_inp, "ts_on": ts_on, "ec_on": ec_on, "calib_on": calib_on,
-        }
+        if branch == 0:
+            run_blocks = self._ec_decide(step, hidden_states)
+            self._ec_run = run_blocks
+            if self._ec_debug:
+                print(f"EC step={step} run={int(run_blocks)} "
+                      f"cum={self._ec_cumulative:.4f} K={self._ec_rate}", flush=True)
+        else:
+            run_blocks = self._ec_run
+        return {"run_blocks": run_blocks, "branch": branch}
 
     @torch.compiler.disable
-    def _cache_after_compute(self, decision, hidden_before, hidden_states, block0_out):
-        """Eager: update cache state after a computed step (residual / rate / forecast)."""
-        block_residual = hidden_states - hidden_before
-        if decision["ts_on"]:
-            # TaylorSeer forecasts the residual (order-N generalization of hold).
-            decision["ts_state"].update(block_residual)
-            return
-        branch = decision["branch"]
-        if decision["calib_on"] and decision["mod_inp"] is not None:
-            self._tc_calib_record(branch, decision["mod_inp"], block0_out, block_residual)
-        if decision["ec_on"] and branch == 0:
+    def _cache_after_compute(self, decision, hidden_before, hidden_states):
+        """Eager: update EasyCache state after a computed step (rate + residual)."""
+        if decision["branch"] == 0:
             self._ec_update(hidden_before, hidden_states)
-        rdet = block_residual.detach()
-        self._tc_prev_residual[branch] = rdet  # per-branch (calib / drift)
-        self._tc_reuse_residual = rdet  # shared common-mode residual for reuse
+        self._tc_reuse_residual = (hidden_states - hidden_before).detach()  # shared common-mode residual
 
     @torch.compiler.disable
     def _cache_reuse(self, decision, hidden_before, hidden_states):
         """Eager: skipped step -> reuse cached transformation (CFG common-mode)."""
-        if decision["ts_on"]:
-            return hidden_before + decision["ts_state"].approximate()
         return hidden_states + self._tc_reuse_residual
 
     def post_load_weights(self) -> None:
@@ -816,15 +623,6 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         # sglang's loader can leave Conv params in fp32 while Linears are bf16,
         # which breaks conv(bf16 input, fp32 weight); unify everything to bf16.
         self.to(torch.bfloat16)
-        # Optional selective W4A4 NVFP4 on attn GEMMs + fp4/fp8 on the conv-FFN
-        # conv_inverted 1x1 (the one high-N/K GEMM that wins at low precision).
-        # All env-gated, OFF == baseline.
-        from sglang.multimodal_gen.runtime.models.dits.sana_video_nvfp4 import (
-            maybe_swap_attn_to_fp4,
-            maybe_swap_ffn_lowprec,
-        )
-        maybe_swap_attn_to_fp4(self)
-        maybe_swap_ffn_lowprec(self)
         # Lossless QKV merge for self-attention (env-gated, built after bf16 cast).
         for blk in self.transformer_blocks:
             attn1 = getattr(blk, "attn1", None)
@@ -878,13 +676,7 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         )
         encoder_hidden_states = self.caption_norm(encoder_hidden_states)
 
-        any_cache = (
-            self._ts_order > 0
-            or self._tc_thresh > 0.0
-            or self._tc_skip_from > 0
-            or self._ec_thresh > 0.0
-            or bool(self._tc_calib)
-        )
+        any_cache = self._ec_thresh > 0.0
         if not any_cache:
             # Dense / fusion-only: the block stack is the whole compiled hot path,
             # with no cache machinery in the graph.
@@ -903,30 +695,17 @@ class SanaVideoTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
             decision = self._cache_decide(timestep, hidden_states, timestep_mod, batch_size)
             hidden_before = hidden_states
             if decision["run_blocks"]:
-                if decision["calib_on"]:
-                    hidden_states, block0_out = self._run_blocks_capture0(
-                        hidden_states,
-                        encoder_hidden_states,
-                        timestep_mod,
-                        post_patch_num_frames,
-                        post_patch_height,
-                        post_patch_width,
-                        rotary_emb,
-                        encoder_attention_mask,
-                    )
-                else:
-                    hidden_states = self._run_blocks(
-                        hidden_states,
-                        encoder_hidden_states,
-                        timestep_mod,
-                        post_patch_num_frames,
-                        post_patch_height,
-                        post_patch_width,
-                        rotary_emb,
-                        encoder_attention_mask,
-                    )
-                    block0_out = None
-                self._cache_after_compute(decision, hidden_before, hidden_states, block0_out)
+                hidden_states = self._run_blocks(
+                    hidden_states,
+                    encoder_hidden_states,
+                    timestep_mod,
+                    post_patch_num_frames,
+                    post_patch_height,
+                    post_patch_width,
+                    rotary_emb,
+                    encoder_attention_mask,
+                )
+                self._cache_after_compute(decision, hidden_before, hidden_states)
             else:
                 hidden_states = self._cache_reuse(decision, hidden_before, hidden_states)
 

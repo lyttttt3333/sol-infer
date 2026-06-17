@@ -49,35 +49,25 @@ def main():
     ap.add_argument("--motion-score", type=int, default=30)
     ap.add_argument("--nprompts", type=int, default=16, help="run only the first N prompts")
     ap.add_argument("--output-base", default="/home/yitongl/sana_video/outputs/sglang_sana_480p_val")
-    # cache toggles (same env contract as sana_video_sglang_run.py; OFF==dense)
-    ap.add_argument("--teacache", type=float, default=0.0)
-    ap.add_argument("--coeffs", default="")
-    ap.add_argument("--skip-from", type=int, default=0)
-    ap.add_argument("--taylorseer", type=int, default=0)
-    ap.add_argument("--ts-interval", type=int, default=2)
-    ap.add_argument("--ts-warmup", type=int, default=3)
+    # acceleration toggles (same env contract as sana_video_sglang_run.py; OFF==dense)
     ap.add_argument("--easycache", type=float, default=0.0)
     ap.add_argument("--ec-warmup", type=int, default=3)
-    ap.add_argument("--ffn-lp", default="", choices=["", "fp4", "fp8"])
+    ap.add_argument("--ec-subsample", type=int, default=8)
+    ap.add_argument("--linattn-bf16", action="store_true")
+    ap.add_argument("--qkv-merge", action="store_true")
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--no-warmup", action="store_true")
     args = ap.parse_args()
 
     # technique env BEFORE building the model (DiT reads it in __init__)
-    _os.environ["SGLANG_SANA_TEACACHE_THRESH"] = str(args.teacache)
-    if args.coeffs:
-        _os.environ["SGLANG_SANA_TEACACHE_COEFFS"] = args.coeffs
-    if args.skip_from:
-        _os.environ["SGLANG_SANA_SKIP_FROM_STEP"] = str(args.skip_from)
-    if args.taylorseer:
-        _os.environ["SGLANG_SANA_TAYLORSEER_ORDER"] = str(args.taylorseer)
-        _os.environ["SGLANG_SANA_TAYLORSEER_INTERVAL"] = str(args.ts_interval)
-        _os.environ["SGLANG_SANA_TAYLORSEER_WARMUP"] = str(args.ts_warmup)
+    if args.linattn_bf16:
+        _os.environ["SGLANG_SANA_LINATTN_BF16"] = "1"
+    if args.qkv_merge:
+        _os.environ["SGLANG_SANA_QKV_MERGE"] = "1"
     if args.easycache:
         _os.environ["SGLANG_SANA_EASYCACHE_THRESH"] = str(args.easycache)
         _os.environ["SGLANG_SANA_EASYCACHE_WARMUP"] = str(args.ec_warmup)
-    if args.ffn_lp:
-        _os.environ["SGLANG_SANA_FFN_LP"] = args.ffn_lp
+        _os.environ["SGLANG_SANA_EASYCACHE_SUBSAMPLE"] = str(args.ec_subsample)
 
     import glob
 

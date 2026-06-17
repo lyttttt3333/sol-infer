@@ -27,59 +27,32 @@ def main():
     ap.add_argument("--output", default="/home/yitongl/sana_video/outputs/sglang_sana_480p")
     ap.add_argument("--label", default="")
     ap.add_argument("--compile", action="store_true", help="enable torch.compile (kernel-fusion toggle)")
+    ap.add_argument("--linattn-bf16", action="store_true",
+                    help="bf16 linear-attention KV aggregation (fusion; part of fullopt stack)")
+    ap.add_argument("--qkv-merge", action="store_true",
+                    help="lossless merged QKV projection for self-attention (fusion; part of fullopt stack)")
     ap.add_argument("--no-warmup", action="store_true",
                     help="disable warmup (warmup is ON by default for clean steady-state timing)")
-    ap.add_argument("--teacache", type=float, default=0.0,
-                    help="TeaCache rel-L1 threshold (0=off; higher=more skips / 跳步幅度)")
-    ap.add_argument("--coeffs", default="",
-                    help="TeaCache calibrated polynomial (highest-degree-first, comma-sep) "
-                         "mapping input-relL1 -> output-relL1")
-    ap.add_argument("--calib", default="",
-                    help="TeaCache calibration: write per-step (branch input_relL1 output_relL1) "
-                         "to this path; forces dense so the pairs describe true per-step drift")
-    ap.add_argument("--nvfp4", action="store_true",
-                    help="enable selective W4A4 NVFP4 on attn GEMMs")
-    ap.add_argument("--ffn-lp", default="", choices=["", "fp4", "fp8"],
-                    help="low-precision conv-FFN conv_inverted (fp4/fp8; the one high-N/K GEMM)")
-    ap.add_argument("--nvfp4-layers", default="",
-                    help="which blocks get NVFP4 (e.g. '0-9'); default all")
-    ap.add_argument("--skip-from", type=int, default=0,
-                    help="late-step skip: run steps [0,N) fully, reuse residual after (0=off); "
-                         "composition-preserving fine-grained speed knob")
-    ap.add_argument("--taylorseer", type=int, default=0,
-                    help="TaylorSeer order/n_derivatives (0=off, 1=linear, 2=quadratic forecast)")
-    ap.add_argument("--ts-interval", type=int, default=2, help="TaylorSeer compute interval")
-    ap.add_argument("--ts-warmup", type=int, default=3, help="TaylorSeer warmup steps (always computed)")
     ap.add_argument("--easycache", type=float, default=0.0,
                     help="EasyCache reuse threshold (0=off; higher=more skips); "
                          "calibration-free adaptive step skipping")
     ap.add_argument("--ec-warmup", type=int, default=3, help="EasyCache warmup steps (always computed)")
+    ap.add_argument("--ec-subsample", type=int, default=8,
+                    help="EasyCache spatial subsample stride for the rel-change estimate")
     args = ap.parse_args()
     if args.label:
         args.output = f"{args.output}_{args.label}"
     # Set technique env BEFORE building the model (DiT reads them in __init__ /
     # post_load_weights); inherited by the local scheduler subprocess.
     import os as _os
-    _os.environ["SGLANG_SANA_TEACACHE_THRESH"] = str(args.teacache)
-    if args.coeffs:
-        _os.environ["SGLANG_SANA_TEACACHE_COEFFS"] = args.coeffs
-    if args.calib:
-        _os.environ["SGLANG_SANA_TEACACHE_CALIB"] = args.calib
-    if args.nvfp4:
-        _os.environ["SGLANG_SANA_NVFP4"] = "1"
-    if args.ffn_lp:
-        _os.environ["SGLANG_SANA_FFN_LP"] = args.ffn_lp
-    if args.nvfp4_layers:
-        _os.environ["SGLANG_SANA_NVFP4_LAYERS"] = args.nvfp4_layers
-    if args.skip_from:
-        _os.environ["SGLANG_SANA_SKIP_FROM_STEP"] = str(args.skip_from)
-    if args.taylorseer:
-        _os.environ["SGLANG_SANA_TAYLORSEER_ORDER"] = str(args.taylorseer)
-        _os.environ["SGLANG_SANA_TAYLORSEER_INTERVAL"] = str(args.ts_interval)
-        _os.environ["SGLANG_SANA_TAYLORSEER_WARMUP"] = str(args.ts_warmup)
+    if args.linattn_bf16:
+        _os.environ["SGLANG_SANA_LINATTN_BF16"] = "1"
+    if args.qkv_merge:
+        _os.environ["SGLANG_SANA_QKV_MERGE"] = "1"
     if args.easycache:
         _os.environ["SGLANG_SANA_EASYCACHE_THRESH"] = str(args.easycache)
         _os.environ["SGLANG_SANA_EASYCACHE_WARMUP"] = str(args.ec_warmup)
+        _os.environ["SGLANG_SANA_EASYCACHE_SUBSAMPLE"] = str(args.ec_subsample)
 
     print(f"==== STAGE 1: import new SANA-Video modules ====", flush=True)
     try:
