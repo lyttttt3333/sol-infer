@@ -29,7 +29,6 @@ PROMPT_COUNT="${PROMPT_COUNT:-2}"
 PROMPT_START_INDEX="${PROMPT_START_INDEX:-0}"
 PROMPT_END_INDEX="${PROMPT_END_INDEX:-$((PROMPT_COUNT - 1))}"
 MAKE_COMPARE="${MAKE_COMPARE:-1}"
-MAKE_REPORT="${MAKE_REPORT:-1}"
 COSMOS3_16B_MODEL_PATH="${COSMOS3_16B_MODEL_PATH:-nvidia/Cosmos3-Nano}"
 COSMOS3_64B_MODEL_PATH="${COSMOS3_64B_MODEL_PATH:-nvidia/Cosmos3-Super}"
 COSMOS3_16B_NUM_GPUS="${COSMOS3_16B_NUM_GPUS:-1}"
@@ -434,17 +433,8 @@ for model_size in "${model_sizes[@]}"; do
   done
 done
 
-if [[ "$DRY_RUN" != "1" && "$MAKE_REPORT" == "1" ]]; then
-  "$PYTHON_BIN" scripts/cosmos/make_cosmos3_cache_report.py \
-    --root "$ROOT" \
-    --model-sizes "$MODEL_SIZES_TEXT" \
-    --variants "$VARIANTS_TEXT" \
-    --prompt-count "$PROMPT_COUNT"
-fi
-
 if [[ "$failed" != "0" ]]; then
   exit 1
 fi
 
 echo "[done] root: $ROOT"
-echo "[done] report: $ROOT/benchmark_report.html"
