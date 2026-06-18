@@ -5,11 +5,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-VARIANT="${SGLANG_HQ_VARIANT:-${1:-dense}}"
+# Two launch modes only — keep it unambiguous:
+#   baseline : official two-stage, no acceleration (dense reference)
+#   fullopt  : the full acceleration stack (2.47x; see enable_fullopt_env below)
+# `dense` is accepted as a silent alias of `baseline` for back-compat. Advanced
+# users who want to ablate individual techniques can set the underlying
+# SGLANG_LTX2_* / SGLANG_PIECEWISE_ATTN_* env vars directly on top of baseline.
+VARIANT="${SGLANG_HQ_VARIANT:-${1:-baseline}}"
 case "$VARIANT" in
-  dense|kwl|kwl_experimental|kwl_sparse|kwl_stage2_sparse|kwl_cache|kwl_sparse_cache|kwl_teacache_c04_s6|kwl_teacache_c06_s5|kwl_teacache_c08_s5|kwl_stage1_cache_core|kwl_stage1_cache_core_stage2_sparse) ;;
+  baseline|fullopt) ;;
+  dense) VARIANT="baseline" ;;
   *)
-    echo "Usage: SGLANG_HQ_VARIANT=dense|kwl|kwl_experimental|kwl_sparse|kwl_stage2_sparse|kwl_cache|kwl_sparse_cache|kwl_teacache_c04_s6|kwl_teacache_c06_s5|kwl_teacache_c08_s5|kwl_stage1_cache_core|kwl_stage1_cache_core_stage2_sparse $0 [variant]" >&2
+    echo "Usage: $0 [baseline|fullopt]   (or SGLANG_HQ_VARIANT=baseline|fullopt)" >&2
     exit 2
     ;;
 esac
@@ -115,6 +122,9 @@ clear_lossy_env() {
   export SGLANG_LTX2_TE_NVFP4_VIDEO_FFN=0
   export SGLANG_LTX2_TE_NVFP4_FUSED_PROJ_IN_GELU=0
   export SGLANG_LTX2_TE_NVFP4_FUSED_PROJ_OUT_BIAS_GATE=0
+  unset SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_RATIO
+  unset SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_METHOD
+  unset SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_STEPS
 }
 
 enable_te_nvfp4_video_ffn_env() {
@@ -182,43 +192,6 @@ enable_kwl_env() {
   export SGLANG_LTX2_VAE_COMPILE_MODE="${SGLANG_LTX2_VAE_COMPILE_MODE:-max-autotune-no-cudagraphs}"
 }
 
-enable_kwl_experimental_env() {
-  disable_kwl_env
-  export SGLANG_LTX2_SHARE_BLOCK0_SELF_ATTN="${SGLANG_HQ_KWL_SHARE_BLOCK0_SELF_ATTN:-1}"
-  export SGLANG_LTX2_SHARE_GUIDANCE_PREFIX="${SGLANG_HQ_KWL_SHARE_GUIDANCE_PREFIX:-1}"
-  export SGLANG_LTX2_FUSED_QK_ROPE="${SGLANG_HQ_KWL_FUSED_QK_ROPE:-1}"
-  export SGLANG_LTX2_FUSED_RMS_ADALN="${SGLANG_HQ_KWL_FUSED_RMS_ADALN:-1}"
-  export SGLANG_LTX2_FUSED_ADALN="${SGLANG_HQ_KWL_FUSED_ADALN:-1}"
-  export SGLANG_LTX2_FUSED_QKNORM_ROPE="${SGLANG_HQ_KWL_FUSED_QKNORM_ROPE:-1}"
-  export SGLANG_LTX2_FUSED_DUAL_MODULATE="${SGLANG_HQ_KWL_FUSED_DUAL_MODULATE:-1}"
-  export SGLANG_LTX2_FUSED_CA_DUAL_MODULATE="${SGLANG_HQ_KWL_FUSED_CA_DUAL_MODULATE:-1}"
-  export SGLANG_LTX2_FUSED_ADA_VALUES_ALL="${SGLANG_HQ_KWL_FUSED_ADA_VALUES_ALL:-1}"
-  export SGLANG_LTX2_FUSED_RESIDUAL_GATE="${SGLANG_HQ_KWL_FUSED_RESIDUAL_GATE:-1}"
-  export SGLANG_LTX2_FUSED_FFN_PROJ_IN_GELU="${SGLANG_HQ_KWL_FUSED_FFN_PROJ_IN_GELU:-1}"
-  export SGLANG_LTX2_COMPILE_GATE_TO_OUT="${SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT:-1}"
-  export SGLANG_LTX2_COMPILE_GATE_TO_OUT_RESIDUAL="${SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT_RESIDUAL:-1}"
-  export SGLANG_LTX2_FUSED_AUDIO_QKVG="${SGLANG_HQ_KWL_FUSED_AUDIO_QKVG:-1}"
-  export SGLANG_ENABLE_FUSED_QKNORM_ROPE="${SGLANG_HQ_KWL_ENABLE_FUSED_QKNORM_ROPE:-1}"
-  export SGLANG_LTX2_COMPILE_TILED_VAE_DECODER="${SGLANG_HQ_KWL_COMPILE_TILED_VAE:-1}"
-  export SGLANG_LTX2_VAE_COMPILE_MODE="${SGLANG_LTX2_VAE_COMPILE_MODE:-max-autotune-no-cudagraphs}"
-}
-
-
-enable_sparse_env() {
-  export SGLANG_PIECEWISE_ATTN_SPARSITY="${SGLANG_PIECEWISE_ATTN_SPARSITY:-0.9}"
-  export SGLANG_PIECEWISE_ATTN_BLOCK_SIZE="${SGLANG_PIECEWISE_ATTN_BLOCK_SIZE:-64}"
-  export SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF="${SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF:-true}"
-  export SGLANG_PIECEWISE_ATTN_STAGE1_SCHEDULE="${SGLANG_PIECEWISE_ATTN_STAGE1_SCHEDULE:-true}"
-  export SGLANG_PIECEWISE_ATTN_STAGE1_DENSE_STEPS="${SGLANG_PIECEWISE_ATTN_STAGE1_DENSE_STEPS:-3}"
-  export SGLANG_PIECEWISE_ATTN_STAGE1_START_SPARSITY="${SGLANG_PIECEWISE_ATTN_STAGE1_START_SPARSITY:-0.8}"
-  export SGLANG_PIECEWISE_ATTN_STAGE1_END_SPARSITY="${SGLANG_PIECEWISE_ATTN_STAGE1_END_SPARSITY:-0.9}"
-  export SGLANG_PIECEWISE_ATTN_DENSE_LAYERS="${SGLANG_PIECEWISE_ATTN_DENSE_LAYERS:-0}"
-  export SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER="${SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER:-true}"
-  export SGLANG_PIECEWISE_ATTN_ROUTE_MODE="${SGLANG_PIECEWISE_ATTN_ROUTE_MODE:-score}"
-  COMPONENT_ATTENTION_BACKENDS="${SGLANG_HQ_COMPONENT_ATTENTION_BACKENDS:-transformer=piecewise_attn,transformer_2=piecewise_attn}"
-  ATTENTION_BACKEND_CONFIG="piecewise_sparsity=${SGLANG_PIECEWISE_ATTN_SPARSITY},piecewise_block_size=${SGLANG_PIECEWISE_ATTN_BLOCK_SIZE},piecewise_only_video_self_attention=${SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF},piecewise_stage1_schedule=${SGLANG_PIECEWISE_ATTN_STAGE1_SCHEDULE},piecewise_stage1_dense_steps=${SGLANG_PIECEWISE_ATTN_STAGE1_DENSE_STEPS},piecewise_stage1_start_sparsity=${SGLANG_PIECEWISE_ATTN_STAGE1_START_SPARSITY},piecewise_stage1_end_sparsity=${SGLANG_PIECEWISE_ATTN_STAGE1_END_SPARSITY},piecewise_dense_layers=${SGLANG_PIECEWISE_ATTN_DENSE_LAYERS},piecewise_approx_remainder=${SGLANG_PIECEWISE_ATTN_APPROX_REMAINDER},piecewise_route_mode=${SGLANG_PIECEWISE_ATTN_ROUTE_MODE}"
-}
-
 enable_stage2_sparse_env() {
   export SGLANG_PIECEWISE_ATTN_SPARSITY="${SGLANG_PIECEWISE_ATTN_SPARSITY:-0.9}"
   export SGLANG_PIECEWISE_ATTN_BLOCK_SIZE="${SGLANG_PIECEWISE_ATTN_BLOCK_SIZE:-64}"
@@ -244,95 +217,61 @@ enable_stage1_cache_core_env() {
   export SGLANG_LTX2_STAGE1_CACHE_CORE_CACHE_DEVICE="${SGLANG_LTX2_STAGE1_CACHE_CORE_CACHE_DEVICE:-default}"
 }
 
-enable_teacache_env() {
-  CACHE_ALGO="teacache"
-  export SGLANG_LTX2_TEACACHE_ENABLED=1
-  export SGLANG_LTX2_TEACACHE_STAGE1_ENABLED="${SGLANG_LTX2_TEACACHE_STAGE1_ENABLED:-1}"
-  export SGLANG_LTX2_TEACACHE_STAGE2_DISABLE="${SGLANG_LTX2_TEACACHE_STAGE2_DISABLE:-1}"
-  export SGLANG_LTX2_TEACACHE_END="${SGLANG_LTX2_TEACACHE_END:--1}"
-  export SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS="${SGLANG_LTX2_TEACACHE_MAX_CONTINUOUS_HITS:-1}"
-  export SGLANG_LTX2_TEACACHE_PERIODIC_RECOMPUTE_STEPS="${SGLANG_LTX2_TEACACHE_PERIODIC_RECOMPUTE_STEPS:-0}"
-  case "$VARIANT" in
-    kwl_teacache_c04_s6)
-      export SGLANG_LTX2_TEACACHE_THRESH="${SGLANG_LTX2_TEACACHE_THRESH:-0.04}"
-      export SGLANG_LTX2_TEACACHE_START="${SGLANG_LTX2_TEACACHE_START:-6}"
-      ;;
-    kwl_teacache_c06_s5)
-      export SGLANG_LTX2_TEACACHE_THRESH="${SGLANG_LTX2_TEACACHE_THRESH:-0.06}"
-      export SGLANG_LTX2_TEACACHE_START="${SGLANG_LTX2_TEACACHE_START:-5}"
-      ;;
-    kwl_teacache_c08_s5)
-      export SGLANG_LTX2_TEACACHE_THRESH="${SGLANG_LTX2_TEACACHE_THRESH:-0.08}"
-      export SGLANG_LTX2_TEACACHE_START="${SGLANG_LTX2_TEACACHE_START:-5}"
-      ;;
-  esac
-}
-
-
-enable_cache_env() {
-  CACHE_ALGO="${SGLANG_HQ_CACHE_ALGO:-pab}"
-  case "$CACHE_ALGO" in
-    pab)
-      export SGLANG_LTX2_PAB_ENABLED=1
-      export SGLANG_LTX2_PAB_SPATIAL_WINDOW="${SGLANG_LTX2_PAB_SPATIAL_WINDOW:-3}"
-      export SGLANG_LTX2_PAB_TEMPORAL_WINDOW="${SGLANG_LTX2_PAB_TEMPORAL_WINDOW:-3}"
-      export SGLANG_LTX2_PAB_CROSS_WINDOW="${SGLANG_LTX2_PAB_CROSS_WINDOW:-3}"
-      export SGLANG_LTX2_PAB_START_STEP="${SGLANG_LTX2_PAB_START_STEP:-6}"
-      export SGLANG_LTX2_PAB_END_STEP="${SGLANG_LTX2_PAB_END_STEP:--1}"
-      export SGLANG_LTX2_PAB_DISABLE_AUDIO_VIDEO_CROSS="${SGLANG_LTX2_PAB_DISABLE_AUDIO_VIDEO_CROSS:-1}"
-      export SGLANG_LTX2_PAB_A2V_WINDOW="${SGLANG_LTX2_PAB_A2V_WINDOW:-1}"
-      export SGLANG_LTX2_PAB_V2A_WINDOW="${SGLANG_LTX2_PAB_V2A_WINDOW:-1}"
-      export SGLANG_LTX2_PAB_STAGE2_ENABLED="${SGLANG_LTX2_PAB_STAGE2_ENABLED:-0}"
-      export SGLANG_LTX2_PAB_STAGE2_SPATIAL_WINDOW="${SGLANG_LTX2_PAB_STAGE2_SPATIAL_WINDOW:-3}"
-      export SGLANG_LTX2_PAB_STAGE2_TEMPORAL_WINDOW="${SGLANG_LTX2_PAB_STAGE2_TEMPORAL_WINDOW:-3}"
-      export SGLANG_LTX2_PAB_STAGE2_CROSS_WINDOW="${SGLANG_LTX2_PAB_STAGE2_CROSS_WINDOW:-3}"
-      export SGLANG_LTX2_PAB_STAGE2_START_STEP="${SGLANG_LTX2_PAB_STAGE2_START_STEP:-0}"
-      export SGLANG_LTX2_PAB_STAGE2_END_STEP="${SGLANG_LTX2_PAB_STAGE2_END_STEP:--1}"
-      ;;
-    dbcache)
-      export SGLANG_CACHE_DIT_ENABLED=1
-      export SGLANG_CACHE_DIT_WARMUP="${SGLANG_CACHE_DIT_WARMUP:-4}"
-      export SGLANG_CACHE_DIT_RDT="${SGLANG_CACHE_DIT_RDT:-0.24}"
-      export SGLANG_CACHE_DIT_MC="${SGLANG_CACHE_DIT_MC:-3}"
-      export SGLANG_CACHE_DIT_FN="${SGLANG_CACHE_DIT_FN:-1}"
-      export SGLANG_CACHE_DIT_BN="${SGLANG_CACHE_DIT_BN:-0}"
-      ;;
-    none)
-      ;;
-    *)
-      echo "[error] unsupported SGLANG_HQ_CACHE_ALGO=$CACHE_ALGO; use pab|dbcache|none" >&2
-      exit 2
-      ;;
-  esac
+# The single full acceleration stack (the validated 2.47x config). Self-contained
+# so `fullopt` needs no extra env: KWL operator fusion (lossless) + stage-1 SCSP
+# step-skip + stage-2 PISA sparse attention + NVFP4 video FFN + stage-2 midpoint
+# token-prune. Every knob below is overridable for advanced ablation, but the
+# defaults ARE the shipped fullopt.
+enable_fullopt_env() {
+  # 1. KWL operator fusion (algorithm-lossless kernel fusions + compile)
+  : "${SGLANG_HQ_KWL_SHARE_BLOCK0_SELF_ATTN:=1}"
+  : "${SGLANG_HQ_KWL_SHARE_GUIDANCE_PREFIX:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_QK_ROPE:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_RMS_ADALN:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_ADALN:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_QKNORM_ROPE:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_DUAL_MODULATE:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_CA_DUAL_MODULATE:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_ADA_VALUES_ALL:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_RESIDUAL_GATE:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_FFN_PROJ_IN_GELU:=1}"
+  : "${SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT:=1}"
+  : "${SGLANG_HQ_KWL_FUSED_AUDIO_QKVG:=1}"
+  : "${SGLANG_HQ_KWL_ENABLE_FUSED_QKNORM_ROPE:=1}"
+  : "${SGLANG_HQ_KWL_COMPILE_TILED_VAE:=1}"
+  export SGLANG_HQ_KWL_SHARE_BLOCK0_SELF_ATTN SGLANG_HQ_KWL_SHARE_GUIDANCE_PREFIX \
+    SGLANG_HQ_KWL_FUSED_QK_ROPE SGLANG_HQ_KWL_FUSED_RMS_ADALN SGLANG_HQ_KWL_FUSED_ADALN \
+    SGLANG_HQ_KWL_FUSED_QKNORM_ROPE SGLANG_HQ_KWL_FUSED_DUAL_MODULATE \
+    SGLANG_HQ_KWL_FUSED_CA_DUAL_MODULATE SGLANG_HQ_KWL_FUSED_ADA_VALUES_ALL \
+    SGLANG_HQ_KWL_FUSED_RESIDUAL_GATE SGLANG_HQ_KWL_FUSED_FFN_PROJ_IN_GELU \
+    SGLANG_HQ_KWL_COMPILE_GATE_TO_OUT SGLANG_HQ_KWL_FUSED_AUDIO_QKVG \
+    SGLANG_HQ_KWL_ENABLE_FUSED_QKNORM_ROPE SGLANG_HQ_KWL_COMPILE_TILED_VAE
+  enable_kwl_env
+  # 2. stage-1 SCSP step-skip cache (replaces TeaCache; TeaCache is unused here)
+  export SGLANG_LTX2_STAGE1_CACHE_CORE_PRESET="${SGLANG_LTX2_STAGE1_CACHE_CORE_PRESET:-8of15_last_29calls}"
+  enable_stage1_cache_core_env
+  # 3. stage-2 PISA piecewise sparse attention (transformer_2 only, dense layers 0-1)
+  export SGLANG_PIECEWISE_ATTN_STAGE2_DENSE_LAYERS="${SGLANG_PIECEWISE_ATTN_STAGE2_DENSE_LAYERS:-0-1}"
+  enable_stage2_sparse_env
+  # 4. NVFP4 video FFN (load-time FP4 quant)
+  enable_te_nvfp4_video_ffn_env
+  # 5. stage-2 midpoint token-prune (keep 50% of video tokens at refine steps 1-2)
+  export SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_RATIO="${SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_RATIO:-0.5}"
+  export SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_METHOD="${SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_METHOD:-feat_norm}"
+  export SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_STEPS="${SGLANG_LTX2_STAGE2_MIDPOINT_PRUNE_STEPS:-1,2}"
+  # validated-run extras
+  export SGLANG_LTX2_PREPROJECT_PROMPTS="${SGLANG_LTX2_PREPROJECT_PROMPTS:-1}"
+  export SGLANG_LTX2_CACHE_ROPE_EMB="${SGLANG_LTX2_CACHE_ROPE_EMB:-1}"
 }
 
 clear_lossy_env
 COMPONENT_ATTENTION_BACKENDS=""
 ATTENTION_BACKEND_CONFIG=""
 CACHE_ALGO="none"
-if [[ "$VARIANT" == kwl_experimental* ]]; then
-  enable_kwl_experimental_env
-elif [[ "$VARIANT" == kwl* ]]; then
-  enable_kwl_env
+if [[ "$VARIANT" == "fullopt" ]]; then
+  enable_fullopt_env
 else
-  disable_kwl_env
-fi
-if [[ "$VARIANT" == "kwl_stage2_sparse" || "$VARIANT" == "kwl_stage1_cache_core_stage2_sparse" ]]; then
-  enable_stage2_sparse_env
-elif [[ "$VARIANT" == *sparse* ]]; then
-  enable_sparse_env
-fi
-if [[ "$VARIANT" == "kwl_cache" || "$VARIANT" == "kwl_sparse_cache" ]]; then
-  enable_cache_env
-fi
-if [[ "$VARIANT" == "kwl_stage1_cache_core" || "$VARIANT" == "kwl_stage1_cache_core_stage2_sparse" ]]; then
-  enable_stage1_cache_core_env
-fi
-if [[ "$VARIANT" == kwl_teacache_* ]]; then
-  enable_teacache_env
-fi
-if [[ "${SGLANG_HQ_ENABLE_TE_NVFP4_FFN:-0}" == "1" ]]; then
-  enable_te_nvfp4_video_ffn_env
+  disable_kwl_env   # baseline: official two-stage, no acceleration
 fi
 if [[ -z "$COMPONENT_ATTENTION_BACKENDS" && -n "${SGLANG_HQ_COMPONENT_ATTENTION_BACKENDS:-}" ]]; then
   COMPONENT_ATTENTION_BACKENDS="$SGLANG_HQ_COMPONENT_ATTENTION_BACKENDS"
@@ -468,9 +407,9 @@ summary = {
     "audio_cfg_scale": 7.0,
     "audio_stg_scale": 0.0,
     "audio_rescale_scale": 1.0,
-    "lossy_sparse_attention": "sparse" in sys.argv[2],
-    "cache_enabled": "cache" in sys.argv[2],
-    "cache_algo": sys.argv[6] if "cache" in sys.argv[2] else "none",
+    "lossy_sparse_attention": "piecewise" in sys.argv[7],
+    "cache_enabled": sys.argv[6] != "none",
+    "cache_algo": sys.argv[6],
     "component_attention_backends": sys.argv[7],
     "attention_backend_config": sys.argv[8],
     "sparse_stage1_dense_steps": int(__import__("os").environ.get("SGLANG_PIECEWISE_ATTN_STAGE1_DENSE_STEPS", "0") or 0),
