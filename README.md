@@ -210,8 +210,6 @@ backend / one FFN precision / one token-set owner; phase ordering). It does **no
 prove numerical composition of lossy techniques — that is bounded by the
 off==identity invariant of each technique + empirical measurement at the official config.
 
-Self-test: `.conda/ltx23/bin/python scripts/ltx/efficiency_selftest.py` (CPU, 23 checks).
-
 ### LTX-2.3 full-opt status
 
 `ltx_full_opt()` assembles all 5 components. Today: **token-prune is wired through
@@ -224,11 +222,10 @@ emit the same env); step-cache (SCSP) still uses the existing cache-core path.
 
 ## Cluster / running notes
 
-- 4-GPU-minimum QOS; submit via the `scripts/slurm_ltx23_*.sh` jobs. Compile cache
-  persists under `outputs/.cache/`.
+- 4-GPU-minimum QOS; run via `scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh [baseline|fullopt]`.
+  Compile cache persists under `outputs/.cache/`.
 - On a GPU-less login node, importing the full `sglang` package hangs on CUDA
-  enumeration (and torch import is slow off Lustre); run on a GPU node, or for a
-  pure-subpackage unit test stub the parent packages (see `scripts/ltx/efficiency_selftest.py`).
+  enumeration (and torch import is slow off Lustre); run on a GPU node.
 - Always `WARMUP=true` before quoting a total time (no-warmup is compile-dominated).
 
 ---
