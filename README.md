@@ -38,11 +38,11 @@ The LTX-2.3 HQ two-stage reference config. Any timing / quality / VBench number
 | stage-1 | 15 res2s steps (with CFG), distilled-LoRA strength 0.25 |
 | stage-2 | 3 res2s steps, sigmas **[0.909375, 0.725, 0.421875, 0.0]**, LoRA strength 0.5 |
 | guidance_scale | 3.0 (video CFG) |
-| negative prompt | the official long HQ negative prompt in `scripts/run_ltx23_sglang_hq_1080p10s.sh` |
+| negative prompt | the official long HQ negative prompt in `scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh` |
 
 Canonical run:
 ```bash
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh dense   # baseline (no optimizations)
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh dense   # baseline (no optimizations)
 # -> outputs/.../perf.json carries total_duration_ms + per-stage `steps`
 ```
 Reference timing at this config (warmed): baseline ≈ **98 s**, full-opt ≈ **41 s**
@@ -210,7 +210,7 @@ backend / one FFN precision / one token-set owner; phase ordering). It does **no
 prove numerical composition of lossy techniques — that is bounded by the
 off==identity invariant of each technique + empirical measurement at the official config.
 
-Self-test: `.conda/ltx23/bin/python scripts/efficiency_selftest.py` (CPU, 23 checks).
+Self-test: `.conda/ltx23/bin/python scripts/ltx/efficiency_selftest.py` (CPU, 23 checks).
 
 ### LTX-2.3 full-opt status
 
@@ -228,7 +228,7 @@ emit the same env); step-cache (SCSP) still uses the existing cache-core path.
   persists under `outputs/.cache/`.
 - On a GPU-less login node, importing the full `sglang` package hangs on CUDA
   enumeration (and torch import is slow off Lustre); run on a GPU node, or for a
-  pure-subpackage unit test stub the parent packages (see `scripts/efficiency_selftest.py`).
+  pure-subpackage unit test stub the parent packages (see `scripts/ltx/efficiency_selftest.py`).
 - Always `WARMUP=true` before quoting a total time (no-warmup is compile-dominated).
 
 ---
