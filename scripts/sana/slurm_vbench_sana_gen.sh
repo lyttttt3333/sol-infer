@@ -45,7 +45,7 @@ mkdir -p /home/yitongl/sana_video/logs "$GEN_OUTDIR" "$XDG_CACHE_HOME" \
 PY=.conda/ltx23/bin/python
 echo "[$(date)] config=$GEN_CONFIG nodes=$SLURM_NNODES ntasks=$SLURM_NTASKS -> $GEN_OUTDIR"
 
-srun --kill-on-bad-exit=0 $PY scripts/gen_vbench_sana.py
+srun --kill-on-bad-exit=0 $PY scripts/sana/gen_vbench_sana.py
 rc=$?
 echo "[$(date)] EXIT_RC=$rc  generated=$(ls "$GEN_OUTDIR"/*.mp4 2>/dev/null | wc -l)/944"
 exit $rc

@@ -39,7 +39,7 @@ PYTHON=.conda/ltx23/bin/python
 echo "[$(date)] Node: $(hostname)  CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1
 
-$PYTHON scripts/run_sana_video_t2v.py "$@"
+$PYTHON scripts/sana/run_sana_video_t2v.py "$@"
 rc=$?
 echo "[$(date)] EXIT_RC=$rc"
 exit $rc

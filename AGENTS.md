@@ -73,10 +73,10 @@ Compute nodes are offline, so materialize models first on a node with network.
 Per-model download scripts (run via `cpu_datamover`):
 
 ```bash
-sbatch scripts/slurm_download_cosmos3.sh
-sbatch scripts/slurm_download_ltx23_official_cpu.sh
-sbatch scripts/slurm_download_ltx23_official_lora_cpu.sh
-bash   scripts/download_sana_video_cpu.sh        # or via slurm_datamover_py.sh
+sbatch scripts/cosmos/slurm_download_cosmos3.sh
+sbatch scripts/ltx/slurm_download_ltx23_official_cpu.sh
+sbatch scripts/ltx/slurm_download_ltx23_official_lora_cpu.sh
+bash   scripts/sana/download_sana_video_cpu.sh        # or via slurm_datamover_py.sh
 ```
 
 Generic CPU runner for any download/processing python on the datamover node:
@@ -91,15 +91,15 @@ Each model has ONE primary launch entry. All run single-GPU unless noted.
 
 | Model | Launch | Modes |
 |---|---|---|
-| SANA-Video | `scripts/sana_video_sglang_run.py` | EasyCache+fusion |
-| Cosmos3-Super (64B) | `scripts/slurm_cosmos3_super.sh` | TeaCache+NVFP4 (4 GPU) |
-| LTX-2.3 1080p/10s | `scripts/run_ltx23_sglang_hq_1080p10s.sh` | `baseline` \| `fullopt` |
+| SANA-Video | `scripts/sana/sana_video_sglang_run.py` | EasyCache+fusion |
+| Cosmos3-Super (64B) | `scripts/cosmos/slurm_cosmos3_super.sh` | TeaCache+NVFP4 (4 GPU) |
+| LTX-2.3 1080p/10s | `scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh` | `baseline` \| `fullopt` |
 
 LTX example (the canonical, unambiguous entry):
 
 ```bash
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh baseline   # dense reference
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh fullopt    # full 2.47x stack, self-contained
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh baseline   # dense reference
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh fullopt    # full 2.47x stack, self-contained
 ```
 
 `fullopt` bakes in the whole recipe (KWL fusion + stage-1 SCSP step-skip +
@@ -121,7 +121,7 @@ export CUDA_HOME=$CU/cu13
 export MODEL_PATH=$REF/outputs/.cache/sgl_diffusion/materialized_models/Lightricks__LTX-2.3-c24cea94ab17c493
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 cd "$WORK"                               # PYTHONPATH resolves to $WORK/python
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh fullopt
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh fullopt
 ```
 
 ## 7. SLURM cheat-sheet

@@ -5,9 +5,9 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --exclusive
 #SBATCH -t 00:30:00
-#SBATCH -J ltx2-fp4-qkv-pack
-#SBATCH -o outputs/ltx23-nvfp4-qkv-pack/slurm-%j.out
-#SBATCH -e outputs/ltx23-nvfp4-qkv-pack/slurm-%j.err
+#SBATCH -J ltx2-resgate
+#SBATCH -o outputs/ltx23-residual-gate-epilogue/slurm-%j.out
+#SBATCH -e outputs/ltx23-residual-gate-epilogue/slurm-%j.err
 
 set -euo pipefail
 
@@ -20,10 +20,9 @@ export CUDA_HOME="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cu13"
 export CUDA_PATH="$CUDA_HOME"
 export LD_LIBRARY_PATH="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cublas/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cudnn/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/nccl/lib:$CUDA_HOME/lib:$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
 
-mkdir -p outputs/ltx23-nvfp4-qkv-pack
+mkdir -p outputs/ltx23-residual-gate-epilogue
 
-.conda/ltx23/bin/python scripts/bench_ltx2_nvfp4_qkv_pack.py \
-  --out outputs/ltx23-nvfp4-qkv-pack/result.json \
-  --backend cudnn \
-  --repeats 7 \
-  --warmup 5
+.conda/ltx23/bin/python scripts/ltx/bench_ltx2_residual_gate_epilogue.py \
+  --out outputs/ltx23-residual-gate-epilogue/result.json \
+  --repeats 5 \
+  --warmup 3

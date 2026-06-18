@@ -65,7 +65,7 @@ COSMOS3_16B_MODEL_PATH="$COSMOS3_NANO_LOCAL" \
 COSMOS3_16B_NUM_GPUS=1 \
 WARMUP=false \
 ALLOW_PARTIAL=1 \
-bash scripts/run_cosmos3_cache_matrix.sh
+bash scripts/cosmos/run_cosmos3_cache_matrix.sh
 
 echo "[$(date)] VALIDATION done. Checking output:"
 ls -lh "$ROOT/16b/prompt_0/baseline/" 2>/dev/null || echo "  (no output dir)"

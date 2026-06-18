@@ -121,10 +121,10 @@ from remaining live on GPU memory during the refinement stage.
 HQ, 15-step stage-1 `LTX2TwoStageHQPipeline`:
 
 ```bash
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c04_s6
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c06_s5
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c08_s5
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c04_s6
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c06_s5
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c08_s5
 ```
 
 Non-HQ, 30-step stage-1 `LTX2TwoStagePipeline`:
@@ -148,7 +148,7 @@ hit/compute counts and skipped step indices parsed from runtime logs.
 For visual debugging, the same runners support stage-1 output:
 
 ```bash
-STAGE1_ONLY_OUTPUT=1 bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl
+STAGE1_ONLY_OUTPUT=1 bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl
 SAVE_STAGE1_OUTPUT=1 bash scripts/run_ltx23_teacache_hq_nonhq_matrix_10s.sh
 ```
 

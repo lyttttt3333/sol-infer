@@ -3,7 +3,7 @@
 This repo provides two SGLang launch paths aligned to the official LTX-2.3 HQ
 two-stage pipeline semantics:
 
-- `sglang+hq`: `scripts/run_ltx23_sglang_hq_1080p10s.sh`
+- `sglang+hq`: `scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh`
 - `sglang+hq+kwl`: `scripts/run_ltx23_sglang_hq_kwl_1080p10s.sh`
 
 Both use `LTX2TwoStageHQPipeline`, not the older `LTX2TwoStagePipeline`.
@@ -53,7 +53,7 @@ paths such as sparse attention and NVFP4 remain disabled in both scripts.
 Run examples:
 
 ```bash
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh
 bash scripts/run_ltx23_sglang_hq_kwl_1080p10s.sh
 ```
 
@@ -61,7 +61,7 @@ Dry-run examples that validate paths and write `run_command.txt` without running
 inference:
 
 ```bash
-DRY_RUN=1 bash scripts/run_ltx23_sglang_hq_1080p10s.sh
+DRY_RUN=1 bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh
 DRY_RUN=1 bash scripts/run_ltx23_sglang_hq_kwl_1080p10s.sh
 ```
 
@@ -78,9 +78,9 @@ sbatch scripts/slurm_ltx23_sglang_hq_kwl_1080p10s.sh
 The unified runner also supports optimized lossy variants on top of KWL:
 
 ```bash
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_sparse
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_cache
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_sparse_cache
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl_sparse
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl_cache
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl_sparse_cache
 ```
 
 Variant meanings:

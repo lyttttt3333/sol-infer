@@ -82,6 +82,6 @@ WARMUP="${WARMUP:-true}" WARMUP_STEPS=1 \
 FORCE="${FORCE:-1}" \
 MAKE_COMPARE=1 MAKE_REPORT=1 \
 ALLOW_PARTIAL=1 \
-bash scripts/run_cosmos3_cache_matrix.sh
+bash scripts/cosmos/run_cosmos3_cache_matrix.sh
 
 echo "[$(date)] DONE cascade $PROMPT_TAG -> $ROOT"

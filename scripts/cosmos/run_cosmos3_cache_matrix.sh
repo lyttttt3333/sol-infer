@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
 ROOT="${ROOT:-outputs/cosmos3-cache-matrix}"
@@ -435,7 +435,7 @@ for model_size in "${model_sizes[@]}"; do
 done
 
 if [[ "$DRY_RUN" != "1" && "$MAKE_REPORT" == "1" ]]; then
-  "$PYTHON_BIN" scripts/make_cosmos3_cache_report.py \
+  "$PYTHON_BIN" scripts/cosmos/make_cosmos3_cache_report.py \
     --root "$ROOT" \
     --model-sizes "$MODEL_SIZES_TEXT" \
     --variants "$VARIANTS_TEXT" \

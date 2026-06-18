@@ -12,7 +12,7 @@ No sparse attention, fp4, step-count change, scheduler change, prompt change, CF
 ## Code Paths
 
 - Official faithful baseline Slurm entry: scripts/slurm_ltx23_official_hq_pipeline_1080p10s.sh
-- Official KWL ops and CLI entry: scripts/ltx23_official_kwl_ops.py
+- Official KWL ops and CLI entry: scripts/ltx/ltx23_official_kwl_ops.py
 - Official KWL Slurm entry: scripts/slurm_ltx23_official_hq_kwl_1080p10s.sh
 
 The KWL entry patches ltx_pipelines.utils.blocks.DiffusionStage.__init__ before the official pipeline is imported. Each official transformer builder receives one extra ModuleOps installer, so KWL is applied when the official model is built on meta device before weight loading.

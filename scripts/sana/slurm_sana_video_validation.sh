@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=sana-video-sglang
+#SBATCH --job-name=sana-video-val
 #SBATCH --account=nvr_elm_llm
 #SBATCH --partition=batch
 #SBATCH --nodes=1
@@ -45,7 +45,7 @@ PY=.conda/ltx23/bin/python
 echo "[$(date)] node=$(hostname)  CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1
 
-$PY scripts/sana_video_sglang_run.py "$@"
+$PY scripts/sana/sana_video_validation_run.py "$@"
 rc=$?
 echo "[$(date)] EXIT_RC=$rc"
 exit $rc

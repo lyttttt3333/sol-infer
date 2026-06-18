@@ -5,9 +5,9 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --exclusive
 #SBATCH -t 01:00:00
-#SBATCH -J te-nvfp4-pad-fast
-#SBATCH -o outputs/ltx23-te-nvfp4-linear-select-padded-fast/slurm-%j.out
-#SBATCH -e outputs/ltx23-te-nvfp4-linear-select-padded-fast/slurm-%j.err
+#SBATCH -J te-nvfp4-pad
+#SBATCH -o outputs/ltx23-te-nvfp4-linear-select-padded/slurm-%j.out
+#SBATCH -e outputs/ltx23-te-nvfp4-linear-select-padded/slurm-%j.err
 
 set -euo pipefail
 
@@ -21,12 +21,9 @@ export CUDA_PATH="$CUDA_HOME"
 export LD_LIBRARY_PATH="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cublas/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cudnn/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/nccl/lib:$CUDA_HOME/lib:$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
 export NVTE_FRAMEWORK=pytorch
 
-mkdir -p outputs/ltx23-te-nvfp4-linear-select-padded-fast
+mkdir -p outputs/ltx23-te-nvfp4-linear-select-padded
 
-.conda/ltx23/bin/python scripts/bench_te_nvfp4_linear_select_padded.py \
-  --out outputs/ltx23-te-nvfp4-linear-select-padded-fast/result.json \
+.conda/ltx23/bin/python scripts/ltx/bench_te_nvfp4_linear_select_padded.py \
+  --out outputs/ltx23-te-nvfp4-linear-select-padded/result.json \
   --repeats 5 \
-  --warmup 3 \
-  --disable-rht \
-  --disable-stochastic-rounding \
-  --disable-2d-quantization
+  --warmup 3

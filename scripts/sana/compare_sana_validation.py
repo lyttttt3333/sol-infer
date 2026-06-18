@@ -6,7 +6,7 @@ Clips are produced by sana_video_validation_run.py as
   <prefix>_<label>_pNN.mp4
 all sharing seed+prompt per index, so a quality-preserving config tracks dense.
 
-Usage: python scripts/compare_sana_validation.py dense ec010 ec020 ls20
+Usage: python scripts/sana/compare_sana_validation.py dense ec010 ec020 ls20
        (first arg = baseline label; rest = candidates)
 """
 from __future__ import annotations

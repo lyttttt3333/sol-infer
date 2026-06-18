@@ -21,7 +21,7 @@ export PYTHONUNBUFFERED=1
 
 mkdir -p outputs/slurm outputs/LTX-2.3-official-files outputs/.cache/huggingface outputs/.cache/xdg outputs/.tmp
 
-.conda/ltx23/bin/python scripts/download_ltx23_official_files_cpu.py \
+.conda/ltx23/bin/python scripts/ltx/download_ltx23_official_files_cpu.py \
   --output-dir outputs/LTX-2.3-official-files \
   --interval-s 15 \
   ltx-2.3-22b-dev.safetensors \

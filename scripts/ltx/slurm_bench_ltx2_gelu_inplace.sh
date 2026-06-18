@@ -5,9 +5,9 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --exclusive
 #SBATCH -t 00:30:00
-#SBATCH -J ltx2-qgate-fp4
-#SBATCH -o outputs/ltx23-fp4-q-gate-shared/slurm-%j.out
-#SBATCH -e outputs/ltx23-fp4-q-gate-shared/slurm-%j.err
+#SBATCH -J ltx2-gelu-inp
+#SBATCH -o outputs/ltx23-gelu-inplace/slurm-%j.out
+#SBATCH -e outputs/ltx23-gelu-inplace/slurm-%j.err
 
 set -euo pipefail
 
@@ -20,9 +20,9 @@ export CUDA_HOME="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cu13"
 export CUDA_PATH="$CUDA_HOME"
 export LD_LIBRARY_PATH="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cublas/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cudnn/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/nccl/lib:$CUDA_HOME/lib:$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
 
-mkdir -p outputs/ltx23-fp4-q-gate-shared
+mkdir -p outputs/ltx23-gelu-inplace
 
-.conda/ltx23/bin/python scripts/bench_ltx2_fp4_q_gate_shared.py \
-  --out outputs/ltx23-fp4-q-gate-shared/result.json \
-  --repeats 7 \
-  --warmup 5
+.conda/ltx23/bin/python scripts/ltx/bench_ltx2_gelu_inplace.py \
+  --out outputs/ltx23-gelu-inplace/result.json \
+  --repeats 5 \
+  --warmup 3

@@ -29,7 +29,7 @@ PY=/home/yitongl/envs/vbench/bin/python
 mkdir -p /home/yitongl/sana_video/logs "$VBENCH_SCORES_ROOT"
 echo "[$(date)] scoring batches=$VBENCH_BATCHES dims=${VBENCH_DIMS:-<11 default>} nodes=$SLURM_NNODES ntasks=$SLURM_NTASKS"
 
-srun --kill-on-bad-exit=0 $PY scripts/score_vbench_sana.py
+srun --kill-on-bad-exit=0 $PY scripts/sana/score_vbench_sana.py
 rc=$?
 echo "[$(date)] EXIT_RC=$rc"
 exit $rc

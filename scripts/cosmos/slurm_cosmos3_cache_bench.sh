@@ -90,7 +90,7 @@ COSMOS3_16B_NUM_GPUS=1 \
 WARMUP=false \
 FORCE=1 \
 ALLOW_PARTIAL=1 \
-bash scripts/run_cosmos3_cache_matrix.sh
+bash scripts/cosmos/run_cosmos3_cache_matrix.sh
 
 echo "[$(date)] Done! Output at: $ROOT"
 echo "[$(date)] Report:  $ROOT/benchmark_report.html"

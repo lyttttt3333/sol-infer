@@ -15,7 +15,7 @@ This note records the current best LTX-2.3 1080p/10s single-GPU result and the e
 - LoRA: official LTX-2.3 distilled LoRA merged for stage 2
 - Baseline: official Diffusers LTX-2.3 two-stage benchmark, no compile
 
-The Diffusers baseline script intentionally stops at video VAE decode and does not include video postprocess, audio VAE decode, vocoder, or file saving. The SGLang best configuration is reproduced by `scripts/run_ltx23_best_1080p_single_gpu.sh`.
+The Diffusers baseline script intentionally stops at video VAE decode and does not include video postprocess, audio VAE decode, vocoder, or file saving. The SGLang best configuration is reproduced by `scripts/ltx/run_ltx23_best_1080p_single_gpu.sh`.
 
 ## Result
 

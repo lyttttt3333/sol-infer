@@ -7,7 +7,7 @@
 当前最佳复现脚本：
 
 ```bash
-scripts/run_ltx23_best_1080p_single_gpu.sh
+scripts/ltx/run_ltx23_best_1080p_single_gpu.sh
 ```
 
 当前最佳 profile：
@@ -564,7 +564,7 @@ python/sglang/multimodal_gen/configs/models/dits/base.py
 复现脚本：
 
 ```bash
-scripts/slurm_ltx23_best_nvfp4_piecewise_1080p10s.sh
+scripts/ltx/slurm_ltx23_best_nvfp4_piecewise_1080p10s.sh
 ```
 
 脚本仍然使用同一套 1080p/10s 官方生成配置：`1088x1920`, `241` frames, stage1 `30` steps, stage2 `3` steps, `guidance_scale=3.0`，并加载当前 selective NVFP4 stage1/stage2 transformer：
@@ -735,7 +735,7 @@ SGLANG_PIECEWISE_ATTN_ONLY_VIDEO_SELF=true
 对齐后的脚本：
 
 ```text
-scripts/slurm_ltx23_best_nvfp4_piecewise_1080p10s.sh
+scripts/ltx/slurm_ltx23_best_nvfp4_piecewise_1080p10s.sh
 ```
 
 对比口径：baseline 是 dense NVFP4 + fusion，不启用 `piecewise_attn`；optimized 是同一套 NVFP4 + fusion 加 bringup-style score-routed sparse attention。两者使用同一 prompt、seed、1088x1920、241 frames、30 inference steps、guidance scale 3.0、单卡运行。
@@ -830,8 +830,8 @@ The automatic pixel-difference numbers in `fourway-quality-speed-summary.json` a
 复现脚本：
 
 ```bash
-scripts/slurm_ltx23_kwl_pisa_matrix_1080p10s.sh
-scripts/slurm_ltx23_kwl_stage2_pisa_1080p10s.sh
+scripts/ltx/slurm_ltx23_kwl_pisa_matrix_1080p10s.sh
+scripts/ltx/slurm_ltx23_kwl_stage2_pisa_1080p10s.sh
 ```
 
 stage2-only 模式通过 component backend 指定：

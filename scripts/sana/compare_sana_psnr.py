@@ -6,7 +6,7 @@ PSNR convention), then aggregated over the 16 prompts (mean / std / min).
 Higher dB = closer to dense. Reads the validation clips produced by
 sana_video_validation_run.py (<prefix>_val_<label>_pNN.mp4).
 
-Usage: python scripts/compare_sana_psnr.py dense ec010 ec020 ls28 ls20
+Usage: python scripts/sana/compare_sana_psnr.py dense ec010 ec020 ls28 ls20
        (first arg = baseline label; rest = candidates)
 """
 from __future__ import annotations

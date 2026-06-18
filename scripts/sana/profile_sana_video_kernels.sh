@@ -29,9 +29,9 @@ PY=.conda/ltx23/bin/python
 echo "[$(date)] node=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1
 
-$PY scripts/profile_sana_video_kernels.py \
+$PY scripts/sana/profile_sana_video_kernels.py \
   --model Efficient-Large-Model/SANA-Video_2B_480p_diffusers --width 832 --height 480 --label SANA-480p
-$PY scripts/profile_sana_video_kernels.py \
+$PY scripts/sana/profile_sana_video_kernels.py \
   --model Efficient-Large-Model/SANA-Video_2B_720p_diffusers --width 1280 --height 704 --vae-tiling --label SANA-720p
 
 echo "[$(date)] KERNEL_PROFILE_ALL_DONE"

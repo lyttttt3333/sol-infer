@@ -19,7 +19,7 @@ run_one() {
   local mode="$1"
   local out_dir="$ROOT/$mode"
   echo "========== RUN $mode -> $out_dir =========="
-  MODE="$mode" OUT_DIR="$out_dir" bash scripts/slurm_ltx23_kwl_stage2_pisa_1080p10s.sh
+  MODE="$mode" OUT_DIR="$out_dir" bash scripts/ltx/slurm_ltx23_kwl_stage2_pisa_1080p10s.sh
 }
 
 run_one kwl

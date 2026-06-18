@@ -37,7 +37,7 @@ Runtime changes:
 
 Script changes:
 
-- `scripts/run_ltx23_sglang_hq_1080p10s.sh`
+- `scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh`
 - `scripts/run_ltx23_sglang_nonhq_cache_10s.sh`
 - `scripts/run_ltx23_teacache_hq_nonhq_matrix_10s.sh`
 
@@ -72,13 +72,13 @@ Runtime changes:
   - `python/sglang/multimodal_gen/runtime/models/dits/cosmos3video.py`
   - `python/sglang/multimodal_gen/runtime/pipelines_core/stages/model_specific_stages/cosmos3.py`
 - Added Cosmos3 cache benchmark and report scripts:
-  - `scripts/run_cosmos3_cache_matrix.sh`
-  - `scripts/make_cosmos3_cache_report.py`
-- `scripts/run_cosmos3_cache_matrix.sh` now supports prompt index sharding
+  - `scripts/cosmos/run_cosmos3_cache_matrix.sh`
+  - `scripts/cosmos/make_cosmos3_cache_report.py`
+- `scripts/cosmos/run_cosmos3_cache_matrix.sh` now supports prompt index sharding
   (`PROMPT_START_INDEX` / `PROMPT_END_INDEX`), optional compare/report stages,
   and per-run `scheduler_port` / `master_port` derivation so concurrent Slurm
   array tasks do not collide on SG-Lang's local distributed port.
-- `scripts/make_cosmos3_cache_report.py` now computes per-video PSNR against
+- `scripts/cosmos/make_cosmos3_cache_report.py` now computes per-video PSNR against
   the same-prompt baseline by decoding both MP4s frame by frame. The report
   includes per-sample PSNR plus average-by-variant speed/PSNR tables.
 
@@ -447,7 +447,7 @@ bash scripts/run_ltx23_teacache_hq_nonhq_matrix_10s.sh
 HQ single variant:
 
 ```bash
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c04_s6
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl_teacache_c04_s6
 ```
 
 Non-HQ single variant:
@@ -459,7 +459,7 @@ bash scripts/run_ltx23_sglang_nonhq_cache_10s.sh kwl_cache_teacache_c04_s6
 Stage-1-only visual probe:
 
 ```bash
-STAGE1_ONLY_OUTPUT=1 bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl
+STAGE1_ONLY_OUTPUT=1 bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl
 ```
 
 Save stage-1 output while still running final stage-2 refine:
@@ -473,7 +473,7 @@ LoRA override probe:
 ```bash
 SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_1=0.0 \
 SGLANG_LTX2_DISTILLED_LORA_STRENGTH_STAGE_2=0.5 \
-bash scripts/run_ltx23_sglang_hq_1080p10s.sh kwl
+bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh kwl
 ```
 
 ## Validation
@@ -486,7 +486,7 @@ PYTHONPYCACHEPREFIX=/private/tmp/sol_ltx_pycache python3 -m py_compile \
   python/sglang/multimodal_gen/runtime/pipelines_core/stages/decoding_av.py \
   python/sglang/multimodal_gen/runtime/pipelines_core/stages/upsampling.py
 
-bash -n scripts/run_ltx23_sglang_hq_1080p10s.sh \
+bash -n scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh \
   scripts/run_ltx23_sglang_nonhq_cache_10s.sh \
   scripts/run_ltx23_teacache_hq_nonhq_matrix_10s.sh
 
@@ -578,7 +578,7 @@ The runner uses two concrete prompts:
 Default matrix:
 
 ```bash
-bash scripts/run_cosmos3_cache_matrix.sh
+bash scripts/cosmos/run_cosmos3_cache_matrix.sh
 ```
 
 Default variants:
@@ -594,7 +594,7 @@ ROOT=outputs/cosmos3-cache-matrix-$(date +%Y%m%d-%H%M%S) \
 MODEL_SIZES="16b 64b" \
 VARIANTS="baseline teacache_c04_s5 teacache_c08_s5 pab_cross2 dbcache_mild dbcache_target15" \
 HEIGHT=480 WIDTH=832 NUM_FRAMES=81 NUM_INFERENCE_STEPS=35 \
-bash scripts/run_cosmos3_cache_matrix.sh
+bash scripts/cosmos/run_cosmos3_cache_matrix.sh
 ```
 
 Artifacts:
