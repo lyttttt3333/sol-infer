@@ -12,12 +12,32 @@
 #SBATCH --error=/home/yitongl/cosmos3-run/%x-%j.out
 
 set -euo pipefail
-# Generic Cosmos3-Super (64b) runner: one model repo × one prompt × cache sweep,
-# OFFICIAL settings, 4-GPU sequence parallel. Used for direct T2V and (with
-# IMAGE_PATH set + NUM_FRAMES=189) the I2V stage of the cascade.
+# Cosmos3-Super (64b) inference entry — two clean modes, OFFICIAL settings,
+# 4-GPU sequence parallel (T2V; set IMAGE_PATH + NUM_FRAMES=189 for the I2V
+# cascade stage):
+#   baseline : no acceleration (dense reference)
+#   fullopt  : TeaCache 1.15/start10/max3 + step-selective NVFP4 (first/last 3 steps dense)
+# Usage: sbatch scripts/cosmos/slurm_cosmos3_super.sh [baseline|fullopt]   (default fullopt)
 #
 # Required env: MODEL_REPO (e.g. nvidia/Cosmos3-Super), ROOT, PROMPT_FILE, PROMPT_TAG
-# Optional env: VARIANTS, WARMUP, NUM_FRAMES, IMAGE_PATH, NUM_GPUS
+# Optional env: WARMUP, NUM_FRAMES, IMAGE_PATH, NUM_GPUS
+
+MODE="${1:-fullopt}"
+case "$MODE" in
+  baseline)
+    VARIANT="baseline"
+    ;;
+  fullopt)
+    VARIANT="teacache_c115_s10_m3"   # TeaCache thr1.15 / start10 / max3
+    export SGLANG_COSMOS3_FP4_LINEAR=1
+    export SGLANG_COSMOS3_FP4_TARGETS="${SGLANG_COSMOS3_FP4_TARGETS:-gate_up,down,qkv,out}"
+    export SGLANG_COSMOS3_FP4_SKIP_FIRST_STEPS="${SGLANG_COSMOS3_FP4_SKIP_FIRST_STEPS:-3}"
+    export SGLANG_COSMOS3_FP4_SKIP_LAST_STEPS="${SGLANG_COSMOS3_FP4_SKIP_LAST_STEPS:-3}"
+    ;;
+  *)
+    echo "Usage: sbatch $0 [baseline|fullopt]" >&2; exit 2
+    ;;
+esac
 
 : "${MODEL_REPO:?}" ; : "${ROOT:?}" ; : "${PROMPT_FILE:?}" ; : "${PROMPT_TAG:?}"
 REPO=/lustre/fs1/portfolios/nvr/projects/nvr_elm_llm/users/yitongl/code/Sol-LTX-Infer
@@ -26,7 +46,7 @@ RUN_BASE=/home/yitongl/cosmos3-run
 CACHE=$RUN_BASE/.cache
 mkdir -p "$ROOT/logs" "$CACHE"/{xdg,torch,triton,torchinductor,torch_extensions,cuda,sgl_diffusion} "$RUN_BASE/.tmp"
 cd "$REPO"
-echo "[$(date)] Node $(hostname)  MODEL=$MODEL_REPO  TAG=$PROMPT_TAG  frames=${NUM_FRAMES:-189}  image=${IMAGE_PATH:-none}"
+echo "[$(date)] Node $(hostname)  MODE=$MODE  MODEL=$MODEL_REPO  TAG=$PROMPT_TAG  frames=${NUM_FRAMES:-189}  image=${IMAGE_PATH:-none}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 export HF_HOME=/home/yitongl/.hf_cache/huggingface HF_HUB_CACHE=/home/yitongl/.hf_cache/huggingface/hub
@@ -48,7 +68,7 @@ PROMPT_STR="$(cat "$PROMPT_FILE")"
 
 ROOT="$ROOT" \
 MODEL_SIZES=64b \
-VARIANTS="${VARIANTS:-baseline teacache_c115_s16_m2 teacache_c115_s10_m3 teacache_c130_s8_m4 teacache_c150_s5_m8}" \
+VARIANTS="$VARIANT" \
 PROMPT_COUNT=1 \
 PROMPT_0="$PROMPT_STR" \
 NEGATIVE_PROMPT="$OFFICIAL_NEG" \
@@ -60,8 +80,8 @@ DIT_CPU_OFFLOAD=false \
 COSMOS3_64B_NUM_GPUS="${NUM_GPUS:-4}" \
 WARMUP="${WARMUP:-true}" WARMUP_STEPS=1 \
 FORCE="${FORCE:-1}" \
-MAKE_COMPARE="${MAKE_COMPARE:-1}" MAKE_REPORT="${MAKE_REPORT:-1}" \
+MAKE_COMPARE=0 \
 ALLOW_PARTIAL=1 \
 bash scripts/cosmos/run_cosmos3_cache_matrix.sh
 
-echo "[$(date)] DONE $MODEL_REPO $PROMPT_TAG -> $ROOT"
+echo "[$(date)] DONE $MODE $MODEL_REPO $PROMPT_TAG -> $ROOT"

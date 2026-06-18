@@ -92,7 +92,7 @@ Each model has ONE primary launch entry. All run single-GPU unless noted.
 | Model | Launch | Modes |
 |---|---|---|
 | SANA-Video | `scripts/sana/sana_video_sglang_run.py` | EasyCache+fusion |
-| Cosmos3-Super (64B) | `scripts/cosmos/slurm_cosmos3_super.sh` | TeaCache+NVFP4 (4 GPU) |
+| Cosmos3-Super (64B) | `scripts/cosmos/slurm_cosmos3_super.sh` | `baseline` \| `fullopt` (TeaCache+NVFP4, 4 GPU) |
 | LTX-2.3 1080p/10s | `scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh` | `baseline` \| `fullopt` |
 
 LTX example (the canonical, unambiguous entry):
