@@ -51,6 +51,25 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_float_tuple(name: str, default: tuple[float, ...]) -> tuple[float, ...]:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return tuple(float(v) for v in value.split(",") if v.strip() != "")
+    except ValueError:
+        logger.warning("Invalid %s=%r; using %s", name, value, default)
+        return default
+
+
+def _poly1d(coefficients: tuple[float, ...], x: float) -> float:
+    """Evaluate a polynomial (highest-degree-first) at x via Horner's method."""
+    value = 0.0
+    for coefficient in coefficients:
+        value = value * x + coefficient
+    return value
+
+
 @dataclass(frozen=True)
 class Cosmos3TeaCacheConfig:
     enabled: bool = True
@@ -62,6 +81,9 @@ class Cosmos3TeaCacheConfig:
     detach_on_store: bool = True
     clone_on_hit: bool = False
     log_decisions: bool = False
+    # Polynomial (highest-degree-first, Horner) rescale of the per-step rel-L1
+    # distance before accumulation. Identity (1, 0) => no rescale (uncalibrated).
+    coefficients: tuple[float, ...] = (1.0, 0.0)
 
 
 @dataclass
@@ -236,6 +258,9 @@ class Cosmos3TeaCacheCoordinator:
             return Cosmos3TeaCacheDecision(False, key, "feature_shape_changed")
 
         rel_l1 = self._rel_l1(feature, entry.previous_feature)
+        # Calibration: rescale the per-step distance by a polynomial. Identity
+        # coefficients (1, 0) leave rel_l1 unchanged (uncalibrated behavior).
+        rel_l1 = max(0.0, _poly1d(self.config.coefficients, rel_l1))
         accumulated = entry.accumulated_distance + rel_l1
         if accumulated >= self.config.threshold:
             if self.config.log_decisions:
@@ -309,6 +334,9 @@ def cosmos3_teacache_config_from_env() -> Cosmos3TeaCacheConfig:
         detach_on_store=_env_flag("SGLANG_COSMOS3_TEACACHE_DETACH_ON_STORE", True),
         clone_on_hit=_env_flag("SGLANG_COSMOS3_TEACACHE_CLONE_ON_HIT", False),
         log_decisions=_env_flag("SGLANG_COSMOS3_TEACACHE_LOG_DECISIONS", False),
+        coefficients=_env_float_tuple(
+            "SGLANG_COSMOS3_TEACACHE_COEFFICIENTS", (1.0, 0.0)
+        ),
     )
 
 
