@@ -29,6 +29,12 @@ def main():
                          "slashes in output_file_name and writes outputs/<name>.mp4)")
     ap.add_argument("--label", default="")
     ap.add_argument("--compile", action="store_true", help="enable torch.compile (kernel-fusion toggle)")
+    ap.add_argument("--compile-mode", default="default",
+                    help="torch.compile mode for the SANA DiT (default: 'default'). "
+                         "The generic path defaults to 'max-autotune-no-cudagraphs', "
+                         "whose in-process GEMM autotune deadlocks at cuda.synchronize() "
+                         "on GB200/cu130 for the full DiT; 'default' avoids it. An "
+                         "explicit SGLANG_TORCH_COMPILE_MODE env still wins.")
     ap.add_argument("--linattn-bf16", action="store_true",
                     help="bf16 linear-attention KV aggregation (fusion; part of fullopt stack)")
     ap.add_argument("--qkv-merge", action="store_true",
@@ -47,6 +53,10 @@ def main():
     # Set technique env BEFORE building the model (DiT reads them in __init__ /
     # post_load_weights); inherited by the local scheduler subprocess.
     import os as _os
+    if args.compile:
+        # Avoid the max-autotune GEMM-template autotune deadlock (cuda.synchronize
+        # hang) on the full SANA DiT. Honor an explicit env override.
+        _os.environ.setdefault("SGLANG_TORCH_COMPILE_MODE", args.compile_mode)
     if args.linattn_bf16:
         _os.environ["SGLANG_SANA_LINATTN_BF16"] = "1"
     if args.qkv_merge:
