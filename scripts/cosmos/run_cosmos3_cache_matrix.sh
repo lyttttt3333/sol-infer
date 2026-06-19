@@ -65,18 +65,20 @@ mkdir -p \
 read -r -a model_sizes <<< "$MODEL_SIZES_TEXT"
 read -r -a variants <<< "$VARIANTS_TEXT"
 
-prompts=(
-  "${PROMPT_0:-A documentary video of an elderly botanist carefully watering orchids inside a glass greenhouse, morning sunlight, realistic hands, gentle camera movement, natural colors}"
-  "${PROMPT_1:-A red fox running across a snowy forest trail at sunrise, powder snow kicked up by its paws, realistic fur motion, smooth tracking shot, cinematic natural light}"
-  "${PROMPT_2:-A street food vendor flipping scallion pancakes on a busy night market grill, steam rising, realistic hands, handheld documentary camera, neon signs}"
-  "${PROMPT_3:-A golden retriever jumping into a clear mountain lake, water splashing in slow motion, wet fur detail, bright natural daylight}"
-  "${PROMPT_4:-A young violinist practicing alone in a sunlit apartment, close-up bow movement, dust floating in the light, realistic fingers}"
-  "${PROMPT_5:-A hummingbird hovering beside red flowers in a backyard garden, fast wing motion, shallow depth of field, natural colors}"
-  "${PROMPT_6:-A chef slicing tomatoes and herbs on a wooden cutting board, sharp knife movement, realistic kitchen lighting, close-up food texture}"
-  "${PROMPT_7:-A horse galloping along a beach at sunset, wet sand reflections, flowing mane, smooth tracking shot, cinematic realism}"
-  "${PROMPT_8:-A child in a yellow raincoat walking through shallow puddles after rain, city sidewalk reflections, gentle camera movement, realistic motion}"
-  "${PROMPT_9:-A tabby cat stretching on a windowsill beside houseplants, afternoon sunlight, soft fur detail, calm indoor camera movement}"
-)
+# Prompts must be provided explicitly — no built-in defaults. Set PROMPT_0..N
+# (Cosmos3 expects a structured-JSON prompt string), or use the
+# scripts/cosmos/slurm_cosmos3_super.sh entry with PROMPT_FILE, e.g.
+#   PROMPT_FILE=prompts/cosmos/robot_plate.json
+prompts=()
+for _pi in $(seq 0 9); do
+  _pv="PROMPT_$_pi"
+  [[ -n "${!_pv:-}" ]] && prompts+=("${!_pv}")
+done
+if [[ ${#prompts[@]} -eq 0 ]]; then
+  echo "[error] no prompt provided. Set PROMPT_0=... (structured-JSON for Cosmos3) or run via" >&2
+  echo "        scripts/cosmos/slurm_cosmos3_super.sh with PROMPT_FILE=prompts/cosmos/robot_plate.json" >&2
+  exit 2
+fi
 
 model_path_for_size() {
   case "$1" in

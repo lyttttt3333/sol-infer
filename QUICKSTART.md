@@ -78,7 +78,7 @@ bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh fullopt    # ~2.5x, self-contai
 ### Cosmos3-Super 64B (4 GPUs)
 ```bash
 MODEL_REPO=nvidia/Cosmos3-Super ROOT=outputs/cosmos3 \
-PROMPT_FILE=prompt.txt PROMPT_TAG=demo \
+PROMPT_FILE=prompts/cosmos/robot_plate.json PROMPT_TAG=robot_plate \
 bash scripts/cosmos/slurm_cosmos3_super.sh baseline   # or: fullopt  (TeaCache + NVFP4)
 ```
 The entry has `#SBATCH` headers for SLURM (`sbatch ...`); on a single box adjust
