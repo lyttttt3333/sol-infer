@@ -35,6 +35,12 @@ def main():
                          "whose in-process GEMM autotune deadlocks at cuda.synchronize() "
                          "on GB200/cu130 for the full DiT; 'default' avoids it. An "
                          "explicit SGLANG_TORCH_COMPILE_MODE env still wins.")
+    ap.add_argument("--max-autotune", action="store_true",
+                    help="fast compile path (~2.56x once warm; overrides --compile-mode): "
+                         "max-autotune + subprocess autotune (per-choice timeout skips the "
+                         "grouped-conv Triton templates that deadlock at cuda.synchronize on "
+                         "GB200/cu130) + persistent inductor cache. First (cold) run pays "
+                         "autotune; warm runs reuse it. Default (off) = safe 'default' mode (~2.10x).")
     ap.add_argument("--linattn-bf16", action="store_true",
                     help="bf16 linear-attention KV aggregation (fusion; part of fullopt stack)")
     ap.add_argument("--qkv-merge", action="store_true",
@@ -54,9 +60,21 @@ def main():
     # post_load_weights); inherited by the local scheduler subprocess.
     import os as _os
     if args.compile:
-        # Avoid the max-autotune GEMM-template autotune deadlock (cuda.synchronize
-        # hang) on the full SANA DiT. Honor an explicit env override.
-        _os.environ.setdefault("SGLANG_TORCH_COMPILE_MODE", args.compile_mode)
+        if args.max_autotune:
+            # Fast path (~2.56x once warm). The SANA grouped-conv (GROUPS=13440,
+            # 3x3) Triton autotune templates deadlock at cuda.synchronize during
+            # IN-PROCESS autotune on GB200/cu130; run autotune in a subprocess
+            # (per-choice timeout skips the hanging conv) and PERSIST the inductor
+            # cache so only the first (cold) run pays autotune — warm runs reuse it.
+            _os.environ.setdefault("SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs")
+            _os.environ.setdefault("TORCHINDUCTOR_AUTOTUNE_IN_SUBPROC", "1")
+            _os.environ.setdefault(
+                "TORCHINDUCTOR_CACHE_DIR", _os.path.expanduser("~/.cache/sgl_torchinductor")
+            )
+        else:
+            # Safe default (~2.10x): plain inductor 'default' mode avoids the
+            # max-autotune grouped-conv deadlock; runs cold/in-process anywhere.
+            _os.environ.setdefault("SGLANG_TORCH_COMPILE_MODE", args.compile_mode)
     if args.linattn_bf16:
         _os.environ["SGLANG_SANA_LINATTN_BF16"] = "1"
     if args.qkv_merge:
