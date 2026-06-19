@@ -28,7 +28,6 @@ MASTER_PORT_BASE="${MASTER_PORT_BASE:-31000}"
 PROMPT_COUNT="${PROMPT_COUNT:-2}"
 PROMPT_START_INDEX="${PROMPT_START_INDEX:-0}"
 PROMPT_END_INDEX="${PROMPT_END_INDEX:-$((PROMPT_COUNT - 1))}"
-MAKE_COMPARE="${MAKE_COMPARE:-1}"
 COSMOS3_16B_MODEL_PATH="${COSMOS3_16B_MODEL_PATH:-nvidia/Cosmos3-Nano}"
 COSMOS3_64B_MODEL_PATH="${COSMOS3_64B_MODEL_PATH:-nvidia/Cosmos3-Super}"
 COSMOS3_16B_NUM_GPUS="${COSMOS3_16B_NUM_GPUS:-1}"
@@ -418,18 +417,6 @@ for model_size in "${model_sizes[@]}"; do
       fi
     done
 
-    compare_args=()
-    for variant in "${variants[@]}"; do
-      video="$ROOT/$model_size/prompt_${prompt_idx}/$variant/out.mp4"
-      if [[ -s "$video" ]]; then
-        compare_args+=(--item "$(label_for_variant "$variant")=$video")
-      fi
-    done
-    if [[ "$DRY_RUN" != "1" && "$MAKE_COMPARE" == "1" && ${#compare_args[@]} -ge 4 ]]; then
-      "$PYTHON_BIN" scripts/make_multiway_video.py "${compare_args[@]}" \
-        --cols "${COMPARE_COLS:-3}" --tile-width 640 --tile-height 360 \
-        --out "$ROOT/$model_size/prompt_${prompt_idx}/compare.mp4"
-    fi
   done
 done
 
