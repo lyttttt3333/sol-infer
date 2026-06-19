@@ -43,7 +43,7 @@ def main() -> None:
     p.add_argument("--guidance-scale", type=float, default=6.0)
     p.add_argument("--fps", type=int, default=16)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--output", default="/home/yitongl/sana_video/outputs/sana_video_t2v.mp4")
+    p.add_argument("--output", default="outputs/sana_video/sana_video_t2v.mp4")
     p.add_argument("--vae-tiling", action="store_true",
                    help="enable VAE spatial tiling to bound decode memory at high resolution")
     args = p.parse_args()

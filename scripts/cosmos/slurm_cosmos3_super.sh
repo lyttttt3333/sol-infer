@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=0
 #SBATCH --time=04:00:00
-#SBATCH --output=/home/yitongl/cosmos3-run/%x-%j.out
-#SBATCH --error=/home/yitongl/cosmos3-run/%x-%j.out
+#SBATCH --output=cosmos3-super-%x-%j.out
+#SBATCH --error=cosmos3-super-%x-%j.out
 
 set -euo pipefail
 # Cosmos3-Super (64b) inference entry — two clean modes, OFFICIAL settings,
@@ -40,30 +40,36 @@ case "$MODE" in
 esac
 
 : "${MODEL_REPO:?}" ; : "${ROOT:?}" ; : "${PROMPT_FILE:?}" ; : "${PROMPT_TAG:?}"
-REPO=/lustre/fs1/portfolios/nvr/projects/nvr_elm_llm/users/yitongl/code/Sol-LTX-Infer
-PYTHON=$REPO/.conda/ltx23/bin/python
-RUN_BASE=/home/yitongl/cosmos3-run
-CACHE=$RUN_BASE/.cache
-mkdir -p "$ROOT/logs" "$CACHE"/{xdg,torch,triton,torchinductor,torch_extensions,cuda,sgl_diffusion} "$RUN_BASE/.tmp"
-cd "$REPO"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.conda/ltx23/bin/python}"
+CACHE="${SGLANG_CACHE_ROOT:-$REPO_ROOT/outputs/.cache}"
+mkdir -p "$ROOT/logs" "$CACHE"/{xdg,torch,triton,torchinductor,torch_extensions,cuda,sgl_diffusion} "$REPO_ROOT/outputs/.tmp"
+cd "$REPO_ROOT"
 echo "[$(date)] Node $(hostname)  MODE=$MODE  MODEL=$MODEL_REPO  TAG=$PROMPT_TAG  frames=${NUM_FRAMES:-189}  image=${IMAGE_PATH:-none}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-export HF_HOME=/home/yitongl/.hf_cache/huggingface HF_HUB_CACHE=/home/yitongl/.hf_cache/huggingface/hub
-export HF_HUB_ENABLE_HF_TRANSFER=0 HF_HUB_OFFLINE=1
-export CUDA_HOME=$REPO/.conda/ltx23/lib/python3.12/site-packages/nvidia/cu13
-export PATH=$CUDA_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$CUDA_HOME/lib:${LD_LIBRARY_PATH:-}
+export HF_HOME="${HF_HOME:-$REPO_ROOT/.hf_cache/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+export HF_HUB_ENABLE_HF_TRANSFER=0 HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+SP="$REPO_ROOT/.conda/ltx23/lib/python3.12/site-packages/nvidia"
+if [[ -d "$SP/cu13" ]]; then
+  export CUDA_HOME="${CUDA_HOME:-$SP/cu13}"; export PATH="$CUDA_HOME/bin:$PATH"
+  export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/lib:${LD_LIBRARY_PATH:-}"
+fi
 export XDG_CACHE_HOME=$CACHE/xdg TORCH_HOME=$CACHE/torch TRITON_CACHE_DIR=$CACHE/triton
 export TORCHINDUCTOR_CACHE_DIR=$CACHE/torchinductor TORCH_EXTENSIONS_DIR=$CACHE/torch_extensions
-export CUDA_CACHE_PATH=$CACHE/cuda SGLANG_DIFFUSION_CACHE_ROOT=$CACHE/sgl_diffusion TMPDIR=$RUN_BASE/.tmp
+export CUDA_CACHE_PATH=$CACHE/cuda SGLANG_DIFFUSION_CACHE_ROOT=$CACHE/sgl_diffusion TMPDIR=$REPO_ROOT/outputs/.tmp
 
 REPO_CACHE_DIR="$HF_HUB_CACHE/models--${MODEL_REPO/\//--}"
 HASH=$(cat "$REPO_CACHE_DIR/refs/main")
 LOCAL="$REPO_CACHE_DIR/snapshots/$HASH"
 test -f "$LOCAL/model_index.json" || { echo "ERROR model_index.json missing for $MODEL_REPO"; exit 1; }
 
-OFFICIAL_NEG="$(cat "$RUN_BASE/official_prompts/negative_prompt.txt")"
+# negative prompt: honor $NEGATIVE_PROMPT, else a file ($NEGATIVE_PROMPT_FILE), else
+# let run_cosmos3_cache_matrix.sh use its built-in default.
+NEG="${NEGATIVE_PROMPT:-}"
+[[ -z "$NEG" && -n "${NEGATIVE_PROMPT_FILE:-}" && -f "$NEGATIVE_PROMPT_FILE" ]] && NEG="$(cat "$NEGATIVE_PROMPT_FILE")"
 PROMPT_STR="$(cat "$PROMPT_FILE")"
 
 ROOT="$ROOT" \
@@ -71,10 +77,10 @@ MODEL_SIZES=64b \
 VARIANTS="$VARIANT" \
 PROMPT_COUNT=1 \
 PROMPT_0="$PROMPT_STR" \
-NEGATIVE_PROMPT="$OFFICIAL_NEG" \
+NEGATIVE_PROMPT="$NEG" \
 HEIGHT=720 WIDTH=1280 NUM_FRAMES="${NUM_FRAMES:-189}" FPS=24 \
 NUM_INFERENCE_STEPS=35 GUIDANCE_SCALE=6.0 FLOW_SHIFT=10.0 MAX_SEQUENCE_LENGTH=4096 \
-PYTHON_BIN="$PYTHON" \
+PYTHON_BIN="$PYTHON_BIN" \
 COSMOS3_64B_MODEL_PATH="$LOCAL" \
 DIT_CPU_OFFLOAD=false \
 COSMOS3_64B_NUM_GPUS="${NUM_GPUS:-4}" \

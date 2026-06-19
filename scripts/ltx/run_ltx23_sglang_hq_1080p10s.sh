@@ -24,8 +24,10 @@ esac
 mkdir -p outputs/slurm outputs/.cache/huggingface outputs/.cache/xdg outputs/.cache/torch outputs/.cache/triton outputs/.cache/torchinductor outputs/.cache/torch_extensions outputs/.cache/cuda outputs/.cache/sgl_diffusion outputs/.tmp
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-export HF_HOME="$PWD/outputs/.cache/huggingface"
-export HF_HUB_CACHE="$PWD/outputs/.cache/huggingface/hub"
+# Honor a pre-set HF_HOME/HF_HUB_CACHE so a deployer can point at an existing
+# weight cache; otherwise default to a repo-local cache.
+export HF_HOME="${HF_HOME:-$PWD/outputs/.cache/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$PWD/outputs/.cache/huggingface/hub}"
 export XDG_CACHE_HOME="$PWD/outputs/.cache/xdg"
 export TORCH_HOME="$PWD/outputs/.cache/torch"
 export TRITON_CACHE_DIR="$PWD/outputs/.cache/triton"
@@ -52,7 +54,12 @@ fi
 PYTHON_BIN="${PYTHON_BIN:-$PWD/.conda/ltx23/bin/python}"
 MODEL_PATH="${MODEL_PATH:-outputs/.cache/sgl_diffusion/materialized_models/Lightricks__LTX-2.3-c24cea94ab17c493}"
 OFFICIAL_MODEL_DIR="${OFFICIAL_MODEL_DIR:-outputs/LTX-2.3-official-files}"
-DISTILLED_LORA="${DISTILLED_LORA:-$OFFICIAL_MODEL_DIR/ltx-2.3-22b-distilled-lora-384-1.1.safetensors}"
+# distilled LoRA: prefer the -1.1 filename, fall back to the un-suffixed one
+# (different HF snapshots ship one or the other).
+if [[ -z "${DISTILLED_LORA:-}" ]]; then
+  DISTILLED_LORA="$OFFICIAL_MODEL_DIR/ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+  [[ -e "$DISTILLED_LORA" ]] || DISTILLED_LORA="$OFFICIAL_MODEL_DIR/ltx-2.3-22b-distilled-lora-384.safetensors"
+fi
 SPATIAL_UPSAMPLER="${SPATIAL_UPSAMPLER:-$MODEL_PATH/ltx-2.3-spatial-upscaler-x2-1.1.safetensors}"
 ROOT="${ROOT:-outputs/ltx23-sglang-hq-1080p10s}"
 OUT_DIR="${OUT_DIR:-$ROOT/$VARIANT}"
@@ -81,7 +88,12 @@ if [[ "$STAGE1_ONLY_OUTPUT" =~ ^(1|true|yes|on)$ ]]; then
   PERF_JSON="$OUT_DIR/stage1_perf.json"
 fi
 
-for required in "$PYTHON_BIN" "$MODEL_PATH/model_index.json" "$DISTILLED_LORA" "$SPATIAL_UPSAMPLER"; do
+# When MODEL_PATH is an HF repo id (overlay/native flow) rather than a local
+# materialized dir, skip the local model_index.json check and let the runtime
+# resolve + materialize it.
+required_assets=("$PYTHON_BIN" "$DISTILLED_LORA" "$SPATIAL_UPSAMPLER")
+[[ -d "$MODEL_PATH" ]] && required_assets+=("$MODEL_PATH/model_index.json")
+for required in "${required_assets[@]}"; do
   if [[ ! -e "$required" ]]; then
     echo "[error] missing required SGLang HQ asset: $required" >&2
     exit 1

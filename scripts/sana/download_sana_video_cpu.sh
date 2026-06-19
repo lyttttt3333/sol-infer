@@ -7,44 +7,38 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
-#SBATCH --output=/home/yitongl/sana_video/logs/download-%j.out
-#SBATCH --error=/home/yitongl/sana_video/logs/download-%j.out
+#SBATCH --output=sana-video-dl-%j.out
+#SBATCH --error=sana-video-dl-%j.out
 
-# ---------------------------------------------------------------------------
-# Download Efficient-Large-Model/SANA-Video_2B_480p_diffusers on the dedicated
-# data-mover CPU partition (cpu_datamover). Writes to /home (the nvr_elm_llm
-# project lustre quota 10120 spans fs1+fsw and is near-full; /home is a
-# separate filer with ~100T free). Shares HF_HOME with the GPU run script.
-# ---------------------------------------------------------------------------
-
+# Download SANA-Video weights (default Efficient-Large-Model/SANA-Video_2B_480p_diffusers;
+# override as $1). Honors pre-set HF_HOME / HF_TOKEN / PYTHON_BIN.
 set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-export HF_HOME=/home/yitongl/.hf_cache/huggingface
-export HF_HUB_CACHE=$HF_HOME/hub
-export HF_TOKEN=$(cat /home/yitongl/.cache/huggingface/token)
-# The Xet CAS stream stalled indefinitely on a large shard (21+ min, 0 B/s) on a
-# first attempt. Force the classic LFS CDN (resumes the .incomplete via Range)
-# and fail fast on a hung connection so the built-in retry actually fires.
-export HF_HUB_DISABLE_XET=1
-export HF_HUB_DOWNLOAD_TIMEOUT=30
-PYTHON=/lustre/fs1/portfolios/nvr/projects/nvr_elm_llm/users/yitongl/code/Sol-LTX-Infer/.conda/ltx23/bin/python
+export HF_HOME="${HF_HOME:-$REPO_ROOT/.hf_cache/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+export HF_TOKEN="${HF_TOKEN:-$(cat "${HF_TOKEN_FILE:-$HOME/.cache/huggingface/token}" 2>/dev/null || true)}"
+# Xet CAS stream has stalled indefinitely on large shards; force the classic LFS
+# CDN and fail fast on a hung connection so the built-in retry actually fires.
+export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
+export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-30}"
+PYTHON="${PYTHON_BIN:-$REPO_ROOT/.conda/ltx23/bin/python}"
 
 REPO=${1:-Efficient-Large-Model/SANA-Video_2B_480p_diffusers}
+mkdir -p "$HF_HUB_CACHE"
 
-mkdir -p /home/yitongl/sana_video/logs "$HF_HUB_CACHE"
-
-echo "[$(date)] Node: $(hostname)"
-echo "[$(date)] Python: $PYTHON"
+echo "[$(date)] Node: $(hostname)  Python: $PYTHON"
 echo "[$(date)] Downloading $REPO (max_workers=16) -> $HF_HUB_CACHE"
 
-if $PYTHON - "$REPO" << 'PYEOF'
+if "$PYTHON" - "$REPO" << 'PYEOF'
 import os, sys
 from huggingface_hub import snapshot_download
 
 repo = sys.argv[1]
 path = snapshot_download(
     repo,
-    token=os.environ.get("HF_TOKEN"),
+    token=os.environ.get("HF_TOKEN") or None,
     cache_dir=os.environ["HF_HUB_CACHE"],
     max_workers=16,
 )

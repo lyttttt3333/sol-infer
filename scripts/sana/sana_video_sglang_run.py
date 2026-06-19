@@ -24,7 +24,8 @@ def main():
     ap.add_argument("--width", type=int, default=832)
     ap.add_argument("--guidance-scale", type=float, default=6.0)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--output", default="/home/yitongl/sana_video/outputs/sglang_sana_480p")
+    ap.add_argument("--output", default="outputs/sana_video/sglang_sana_480p",
+                    help="output path prefix (default: repo-relative outputs/)")
     ap.add_argument("--label", default="")
     ap.add_argument("--compile", action="store_true", help="enable torch.compile (kernel-fusion toggle)")
     ap.add_argument("--linattn-bf16", action="store_true",

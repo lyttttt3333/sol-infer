@@ -11,10 +11,10 @@
 
 set -euo pipefail
 
-cd /lustre/fs1/portfolios/nvr/projects/nvr_elm_llm/users/yitongl/code/Sol-LTX-Infer
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-export HF_HOME="$PWD/outputs/.cache/huggingface"
-export HF_HUB_CACHE="$PWD/outputs/.cache/huggingface/hub"
+export HF_HOME="${HF_HOME:-$PWD/outputs/.cache/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$PWD/outputs/.cache/huggingface/hub}"
 export XDG_CACHE_HOME="$PWD/outputs/.cache/xdg"
 export TMPDIR="$PWD/outputs/.tmp"
 export PYTHONUNBUFFERED=1

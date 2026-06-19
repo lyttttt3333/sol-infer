@@ -7,45 +7,49 @@
 #SBATCH --exclusive
 #SBATCH --cpus-per-task=32
 #SBATCH --time=01:00:00
-#SBATCH --output=/home/yitongl/sana_video/logs/sglang-%j.out
-#SBATCH --error=/home/yitongl/sana_video/logs/sglang-%j.out
+#SBATCH --output=sana-video-sglang-%j.out
+#SBATCH --error=sana-video-sglang-%j.out
 
 # Validate + run the SANA-Video port in the sglang multimodal_gen runtime.
-# Single GPU (the model is single-GPU); 4-GPU exclusive node per cluster convention.
-
+# Single GPU (the model is single-GPU); the 4-GPU exclusive request is a cluster
+# QOS convention — override with `sbatch --gpus-per-node=...` / `-A <account>`.
+# Honors pre-set HF_HOME / HF_TOKEN / PYTHON_BIN; otherwise repo-relative defaults.
 set -uo pipefail
-cd /lustre/fs1/portfolios/nvr/projects/nvr_elm_llm/users/yitongl/code/Sol-LTX-Infer
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
 
-export HF_HOME=/home/yitongl/.hf_cache/huggingface
-export HF_HUB_CACHE=$HF_HOME/hub
-export HF_TOKEN=$(cat /home/yitongl/.cache/huggingface/token)
-export HF_HUB_OFFLINE=1
-export XDG_CACHE_HOME=/home/yitongl/.cache/xdg
-export TMPDIR=/home/yitongl/sana_video/.tmp
-export CUDA_VISIBLE_DEVICES=0
+export HF_HOME="${HF_HOME:-$REPO_ROOT/.hf_cache/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+export HF_TOKEN="${HF_TOKEN:-$(cat "${HF_TOKEN_FILE:-$HOME/.cache/huggingface/token}" 2>/dev/null || true)}"
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTHONUNBUFFERED=1
-export TORCHINDUCTOR_CACHE_DIR=/home/yitongl/.cache/torchinductor
-export TRITON_CACHE_DIR=/home/yitongl/.cache/triton
 
-# CUDA toolkit (pip nvidia cu13) so sglang JIT kernels (tvm_ffi/timestep_embedding,
-# deep_gemm, nvfp4) can compile. Same convention as the LTX-2 nvfp4 bench scripts.
-export CUDA_HOME="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cu13"
-export CUDA_PATH="$CUDA_HOME"
-export PATH="$CUDA_HOME/bin:${PATH:-}"
-export LD_LIBRARY_PATH="$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cublas/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/cudnn/lib:$PWD/.conda/ltx23/lib/python3.12/site-packages/nvidia/nccl/lib:$CUDA_HOME/lib:$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
-# Persist JIT-compiled kernels on /home so only the first run pays the compile cost.
-export TORCH_EXTENSIONS_DIR=/home/yitongl/.cache/torch_extensions
-export SGLANG_DIFFUSION_CACHE_ROOT=/home/yitongl/.cache/sgl_diffusion
-export CUDA_CACHE_PATH=/home/yitongl/.cache/cuda_cache
+CACHE="${SGLANG_CACHE_ROOT:-$REPO_ROOT/outputs/.cache}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$CACHE/xdg}"
+export TMPDIR="${TMPDIR:-$REPO_ROOT/outputs/.tmp}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$CACHE/torchinductor}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$CACHE/triton}"
+export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-$CACHE/torch_extensions}"
+export SGLANG_DIFFUSION_CACHE_ROOT="${SGLANG_DIFFUSION_CACHE_ROOT:-$CACHE/sgl_diffusion}"
+export CUDA_CACHE_PATH="${CUDA_CACHE_PATH:-$CACHE/cuda_cache}"
 
-mkdir -p /home/yitongl/sana_video/logs /home/yitongl/sana_video/outputs "$TMPDIR" "$XDG_CACHE_HOME" \
-  "$TORCH_EXTENSIONS_DIR" "$SGLANG_DIFFUSION_CACHE_ROOT" "$CUDA_CACHE_PATH"
+# CUDA toolkit (pip nvidia cu13) so sglang JIT kernels can compile/link.
+SP="$REPO_ROOT/.conda/ltx23/lib/python3.12/site-packages/nvidia"
+if [[ -d "$SP/cu13" ]]; then
+  export CUDA_HOME="${CUDA_HOME:-$SP/cu13}"; export CUDA_PATH="$CUDA_HOME"
+  export PATH="$CUDA_HOME/bin:${PATH:-}"
+  export LD_LIBRARY_PATH="$SP/cublas/lib:$SP/cudnn/lib:$SP/nccl/lib:$CUDA_HOME/lib:$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
+fi
 
-PY=.conda/ltx23/bin/python
+mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$TORCH_EXTENSIONS_DIR" "$SGLANG_DIFFUSION_CACHE_ROOT" "$CUDA_CACHE_PATH"
+
+PY="${PYTHON_BIN:-$REPO_ROOT/.conda/ltx23/bin/python}"
 echo "[$(date)] node=$(hostname)  CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1
 
-$PY scripts/sana/sana_video_sglang_run.py "$@"
+"$PY" scripts/sana/sana_video_sglang_run.py "$@"
 rc=$?
 echo "[$(date)] EXIT_RC=$rc"
 exit $rc

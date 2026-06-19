@@ -7,25 +7,32 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --time=00:30:00
-#SBATCH --output=/home/yitongl/.hf_cache/slurm_download-%j.out
-#SBATCH --error=/home/yitongl/.hf_cache/slurm_download-%j.out
-
+#SBATCH --output=cosmos3-download-%j.out
+#SBATCH --error=cosmos3-download-%j.out
+# Download the Cosmos3 model used by the inference entry. Override the repo with
+# COSMOS3_REPO=... (default nvidia/Cosmos3-Super, which slurm_cosmos3_super.sh runs).
+# Honors a pre-set HF_HOME / HF_TOKEN; otherwise uses sane fallbacks.
 set -uo pipefail
 
-export HF_HOME=/home/yitongl/.hf_cache/huggingface
-export HF_HUB_CACHE=$HF_HOME/hub
-export HF_TOKEN=$(cat /home/yitongl/.cache/huggingface/token)
-PYTHON=/lustre/fs1/portfolios/nvr/projects/nvr_elm_llm/users/yitongl/code/Sol-LTX-Infer/.conda/ltx23/bin/python
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-echo "[$(date)] Node: $(hostname)  ulimit -v: $(ulimit -v)"
-echo "[$(date)] Downloading nvidia/Cosmos3-Nano (max_workers=16)..."
+COSMOS3_REPO="${COSMOS3_REPO:-nvidia/Cosmos3-Super}"
+export HF_HOME="${HF_HOME:-$REPO_ROOT/.hf_cache/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+export HF_TOKEN="${HF_TOKEN:-$(cat "${HF_TOKEN_FILE:-$HOME/.cache/huggingface/token}" 2>/dev/null || true)}"
+PYTHON="${PYTHON_BIN:-$REPO_ROOT/.conda/ltx23/bin/python}"
+mkdir -p "$HF_HUB_CACHE"
 
-$PYTHON - << 'PYEOF'
+echo "[$(date)] Node: $(hostname)  repo: $COSMOS3_REPO  cache: $HF_HUB_CACHE"
+
+"$PYTHON" - "$COSMOS3_REPO" << 'PYEOF'
 from huggingface_hub import snapshot_download
-import os
+import os, sys
+repo = sys.argv[1]
 path = snapshot_download(
-    'nvidia/Cosmos3-Nano',
-    token=os.environ['HF_TOKEN'],
+    repo,
+    token=os.environ.get('HF_TOKEN') or None,
     cache_dir=os.environ['HF_HUB_CACHE'],
     ignore_patterns=['*.mp4', '*.png', '*.jpg', 'assets/*', 'images/*'],
     max_workers=16,
@@ -34,5 +41,5 @@ print('Snapshot path:', path)
 PYEOF
 
 echo "[$(date)] Download finished. Total cache size:"
-du -sh "$HF_HUB_CACHE/models--nvidia--Cosmos3-Nano" 2>/dev/null
+du -sh "$HF_HUB_CACHE/models--${COSMOS3_REPO/\//--}" 2>/dev/null
 echo "[$(date)] DOWNLOAD_COMPLETE_MARKER"
