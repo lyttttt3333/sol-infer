@@ -1174,8 +1174,30 @@ class Cosmos3OmniTransformer(CachableDiT):
         self._fp4_enabled = False
         if os.environ.get("SGLANG_COSMOS3_FP4_LINEAR", "0") != "1":
             return
-        import transformer_engine.pytorch as te
-        from transformer_engine.common import recipe as terec
+        # NVFP4 needs Blackwell (sm_100+) FP4 tensor cores + TransformerEngine.
+        # On older GPUs or without TE, fall back to BF16 instead of hard-erroring
+        # (mirrors the LTX-2 graceful-disable behavior).
+        try:
+            _cap_major = torch.cuda.get_device_capability()[0]
+        except Exception:
+            _cap_major = 0
+        if _cap_major < 10:
+            logger.warning(
+                "[fp4-linear] NVFP4 requires Blackwell (sm_100+); GPU is sm_%d0 — "
+                "keeping GEN linears in BF16 (set SGLANG_COSMOS3_FP4_LINEAR=0 to silence).",
+                _cap_major,
+            )
+            return
+        try:
+            import transformer_engine.pytorch as te
+            from transformer_engine.common import recipe as terec
+        except Exception as exc:  # ImportError or TE init failure
+            logger.warning(
+                "[fp4-linear] transformer_engine unavailable (%s) — keeping GEN "
+                "linears in BF16.",
+                exc,
+            )
+            return
 
         self._te = te
         self._fp4_recipe = terec.NVFP4BlockScaling()

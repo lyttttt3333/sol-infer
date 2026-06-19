@@ -149,6 +149,20 @@ def main():
                 fps=16,
             )
         )
+        # Guard against silent failure: a swallowed runtime error (e.g. a JIT
+        # kernel build that fails inside the worker) can return None / write no
+        # file while the process still exits 0. Verify an output actually landed.
+        import glob as _glob
+        produced = bool(res) and (
+            os.path.exists(args.output) or bool(_glob.glob(args.output + "*"))
+        )
+        if not produced:
+            print(
+                f"GENERATE_FAIL: no output produced (res={res!r}; nothing at "
+                f"{args.output}*)",
+                flush=True,
+            )
+            sys.exit(4)
         print(f"GENERATE_OK in {time.time() - t:.1f}s: {res}", flush=True)
         print("RUN_COMPLETE_MARKER", flush=True)
     except Exception:

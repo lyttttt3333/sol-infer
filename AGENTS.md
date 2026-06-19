@@ -137,3 +137,7 @@ run it as a normal `bash` script after adjusting the few site paths near the top
 - On a multi-GPU scheduler (e.g. SLURM), wrap the run in a job that requests the
   GPU count above; otherwise run directly on the GPU host.
 - `scripts/killall_sglang.sh` cleans up stray server/worker processes.
+- NVFP4 (`fullopt` of Cosmos / LTX) needs Blackwell (sm_100+) + `transformer_engine`;
+  on older GPUs it auto-falls back to BF16 with a warning (no hard error).
+- LTX videos may be silent if the bundled `imageio_ffmpeg` can't AAC-mux audio —
+  frames are correct; install a system ffmpeg with AAC for sound.
