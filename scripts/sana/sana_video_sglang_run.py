@@ -24,8 +24,9 @@ def main():
     ap.add_argument("--width", type=int, default=832)
     ap.add_argument("--guidance-scale", type=float, default=6.0)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--output", default="outputs/sana_video/sglang_sana_480p",
-                    help="output path prefix (default: repo-relative outputs/)")
+    ap.add_argument("--output", default="sglang_sana_480p",
+                    help="output file BASENAME (no slashes — the runtime sanitizes "
+                         "slashes in output_file_name and writes outputs/<name>.mp4)")
     ap.add_argument("--label", default="")
     ap.add_argument("--compile", action="store_true", help="enable torch.compile (kernel-fusion toggle)")
     ap.add_argument("--linattn-bf16", action="store_true",
@@ -149,21 +150,19 @@ def main():
                 fps=16,
             )
         )
-        # Guard against silent failure: a swallowed runtime error (e.g. a JIT
-        # kernel build that fails inside the worker) can return None / write no
-        # file while the process still exits 0. Verify an output actually landed.
-        import glob as _glob
-        produced = bool(res) and (
-            os.path.exists(args.output) or bool(_glob.glob(args.output + "*"))
-        )
-        if not produced:
-            print(
-                f"GENERATE_FAIL: no output produced (res={res!r}; nothing at "
-                f"{args.output}*)",
-                flush=True,
-            )
+        # Guard against silent failure: a swallowed worker-side error (e.g. a
+        # failed JIT build) can return None / write no file while still exiting 0.
+        # Trust GenerationResult.output_file_path (the runtime sanitizes/prefixes
+        # the requested name, so it rarely equals args.output) rather than args.output.
+        items = res if isinstance(res, (list, tuple)) else ([res] if res is not None else [])
+        produced_paths = [p for r in items if (p := getattr(r, "output_file_path", None))]
+        if not items:
+            print(f"GENERATE_FAIL: no result returned (res={res!r})", flush=True)
             sys.exit(4)
-        print(f"GENERATE_OK in {time.time() - t:.1f}s: {res}", flush=True)
+        if produced_paths and not any(os.path.exists(p) for p in produced_paths):
+            print(f"GENERATE_FAIL: result paths missing on disk: {produced_paths}", flush=True)
+            sys.exit(4)
+        print(f"GENERATE_OK in {time.time() - t:.1f}s: paths={produced_paths or res}", flush=True)
         print("RUN_COMPLETE_MARKER", flush=True)
     except Exception:
         traceback.print_exc()

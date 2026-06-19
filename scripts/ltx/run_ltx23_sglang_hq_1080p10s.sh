@@ -73,7 +73,11 @@ SEED="${SEED:-42}"
 SAVE_STAGE1_OUTPUT="${SAVE_STAGE1_OUTPUT:-0}"
 STAGE1_ONLY_OUTPUT="${STAGE1_ONLY_OUTPUT:-0}"
 FORCE="${FORCE:-0}"
-WARMUP="${WARMUP:-false}"
+# Default warmup ON: fullopt pays a one-time torch.compile/autotune cost on the
+# first forward; without a warmup pass that lands inside the timed window and the
+# reported speedup looks far worse than steady state. Set WARMUP=false for a
+# single raw run. (warmup-steps=1 is enough to trigger + cache the compile.)
+WARMUP="${WARMUP:-true}"
 WARMUP_STEPS="${WARMUP_STEPS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 MASTER_PORT="${MASTER_PORT:-30005}"
