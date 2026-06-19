@@ -33,6 +33,12 @@ conda activate "$PWD/.conda/ltx23"
 
 # install the diffusion stack (editable)
 uv pip install -e "$PWD/python[diffusion]" --prerelease=allow
+
+# CUDA JIT fixups: the editable install pulls only runtime CUDA libs; the runtime
+# kernel JIT also needs the compiler toolchain (nvcc), CCCL headers, and dev
+# symlinks. This one-shot makes them present. Add --with-te for the NVFP4 fullopt
+# path (Cosmos / LTX); without TE, fullopt gracefully falls back to BF16.
+PYTHON_BIN=.conda/ltx23/bin/python bash scripts/postinstall_cuda_jit.sh   # [--with-te]
 ```
 
 Optional: `sgl-deep-gemm` (FP4 GEMM speedups) builds separately in a

@@ -82,7 +82,10 @@ dependencies = [
   "watchfiles",
   "xgrammar==0.2.0",
   "smg-grpc-servicer>=0.5.0",
-  "kernels",
+  # Pin: kernels>=0.15 breaks `transformers` import (LayerRepository "Either a
+  # revision or a version must be specified"), which gates every HF text-encoder
+  # load (SANA / LTX / Cosmos). 0.14.1 is the known-good resolution.
+  "kernels==0.14.1",
 ]
 
 [[tool.uv.index]]
@@ -96,7 +99,7 @@ runai = ["runai-model-streamer[s3,gcs,azure]>=0.15.7"]
 diffusion = [
   "PyYAML==6.0.1",
   "cloudpickle==3.1.2",
-  "diffusers==0.37.0",
+  "diffusers==0.38.0",
   "imageio==2.36.0",
   "imageio-ffmpeg==0.5.1",
   "moviepy>=2.0.0",
@@ -213,6 +216,11 @@ fallback_version = "0.0.0.dev0"
 target = "sglang.srt.grpc._core"
 path = "../rust/sglang-grpc/Cargo.toml"
 binding = "PyO3"
+# optional: this is the LLM-serving gRPC core (unrelated to diffusion inference).
+# Building it needs a Rust toolchain + protoc + crates.io. Mark optional so a
+# diffusion-only install on a host without Rust skips it (with a warning) instead
+# of failing the whole `pip install`. Re-enable hard build by removing this line.
+optional = true
 
 [tool.kernels.dependencies]
 "kernels-community/sgl-flash-attn3" = 1
