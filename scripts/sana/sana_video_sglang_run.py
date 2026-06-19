@@ -13,11 +13,10 @@ import traceback
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Efficient-Large-Model/SANA-Video_2B_480p_diffusers")
-    ap.add_argument("--prompt", default=(
-        "A cat and a dog baking a cake together in a kitchen. The cat is carefully "
-        "measuring flour, while the dog is stirring the batter with a wooden spoon. "
-        "The kitchen is cozy, with sunlight streaming through the window. motion score: 30."
-    ))
+    ap.add_argument("--prompt", default=None,
+                    help="prompt text; if omitted, read --prompt-file")
+    ap.add_argument("--prompt-file", default=None,
+                    help="prompt file (default: prompts/sana/default.txt in the repo)")
     ap.add_argument("--frames", type=int, default=81)
     ap.add_argument("--steps", type=int, default=50)
     ap.add_argument("--height", type=int, default=480)
@@ -54,6 +53,15 @@ def main():
     ap.add_argument("--ec-subsample", type=int, default=8,
                     help="EasyCache spatial subsample stride for the rel-change estimate")
     args = ap.parse_args()
+    if args.prompt is None:
+        import os as _osp
+        prompt_file = args.prompt_file or _osp.path.join(
+            _osp.path.dirname(_osp.path.dirname(_osp.path.dirname(_osp.path.abspath(__file__)))),
+            "prompts", "sana", "default.txt",
+        )
+        with open(prompt_file) as _pf:
+            args.prompt = _pf.read().strip()
+        print(f"prompt from: {prompt_file}", flush=True)
     if args.label:
         args.output = f"{args.output}_{args.label}"
     # Set technique env BEFORE building the model (DiT reads them in __init__ /

@@ -84,6 +84,13 @@ bash scripts/cosmos/slurm_cosmos3_super.sh baseline   # or: fullopt  (TeaCache +
 The entry has `#SBATCH` headers for SLURM (`sbatch ...`); on a single box adjust
 the few site paths near the top and run with `bash`.
 
+### Prompts
+
+Prompts are versioned under `prompts/<model>/` (each model uses only its own):
+- `prompts/sana/default.txt` — SANA default (read automatically; override with `--prompt` / `--prompt-file`)
+- `prompts/ltx/default.txt` + `prompts/ltx/negative.txt` — LTX defaults (override with `PROMPT=` / `NEGATIVE_PROMPT=` or `PROMPT_FILE=` / `NEGATIVE_PROMPT_FILE=`)
+- `prompts/cosmos/robot_plate.json` — official structured-JSON prompt; Cosmos has **no default**, you must pass `PROMPT_FILE=...`
+
 ## 4. Read the result + keep a log
 
 - Output videos land under `outputs/` (look for the `.mp4` printed as

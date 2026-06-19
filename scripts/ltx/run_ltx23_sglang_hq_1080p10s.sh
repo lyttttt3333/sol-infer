@@ -66,8 +66,10 @@ OUT_DIR="${OUT_DIR:-$ROOT/$VARIANT}"
 OUT_VIDEO="$OUT_DIR/out.mp4"
 STAGE1_VIDEO="$OUT_DIR/stage1_out.mp4"
 PERF_JSON="$OUT_DIR/perf.json"
-PROMPT="${PROMPT:-A cinematic 10 second aerial shot of an antique brass clockwork train crossing a snowy mountain bridge at sunrise, steam drifting through golden light, smooth camera movement, high detail}"
-NEGATIVE_PROMPT="${NEGATIVE_PROMPT:-blurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, wrong hand count, artifacts around text, inconsistent perspective, camera shake, incorrect depth of field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, wrong gaze direction, mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, off-sync audio, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, flat lighting, inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts.}"
+# prompt + negative come from versioned files (override via PROMPT= / NEGATIVE_PROMPT=
+# or PROMPT_FILE= / NEGATIVE_PROMPT_FILE=).
+PROMPT="${PROMPT:-$(cat "${PROMPT_FILE:-$REPO_ROOT/prompts/ltx/default.txt}")}"
+NEGATIVE_PROMPT="${NEGATIVE_PROMPT:-$(cat "${NEGATIVE_PROMPT_FILE:-$REPO_ROOT/prompts/ltx/negative.txt}")}"
 PROMPT_INDEX="${PROMPT_INDEX:-0}"
 SEED="${SEED:-42}"
 SAVE_STAGE1_OUTPUT="${SAVE_STAGE1_OUTPUT:-0}"
