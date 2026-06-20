@@ -1,7 +1,7 @@
 # Acceleration methods (agents)
 
 Per method: files, knobs (env/flag), defaults, decision rules. Lossy unless noted.
-See [../human/methods.md](../human/methods.md) for mechanism.
+See [../human/methods.md](../human/methods.html) for mechanism.
 
 ## 1. Cache (step-skip)
 - TeaCache: `runtime/cache/cosmos3_teacache.py`, `runtime/cache/ltx2_teacache.py`

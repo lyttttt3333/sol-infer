@@ -1,7 +1,7 @@
 # Optimization pipelines (human)
 
 Three video models, each reduced to **one clean acceleration line** = a specific
-assembly of the [five methods](methods.md). Every model also has a dense
+assembly of the [five methods](methods.html). Every model also has a dense
 `baseline` for reference. Numbers are GB200, warmup-excluded, official spec.
 
 ---

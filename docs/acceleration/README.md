@@ -5,8 +5,8 @@ inspired by the layout of `NVlabs/Sana/docs`.
 
 | Category | Human | Agents |
 |---|---|---|
-| **1. Optimization pipelines** (SANA-Video / Cosmos3-Super / LTX-2.3) | [human/pipelines.md](human/pipelines.md) | [agents/pipelines.md](agents/pipelines.md) |
-| **2. Acceleration methods** (the 5 building blocks) | [human/methods.md](human/methods.md) | [agents/methods.md](agents/methods.md) |
+| **1. Optimization pipelines** (SANA-Video / Cosmos3-Super / LTX-2.3) | [human/pipelines.md](human/pipelines.html) | [agents/pipelines.md](agents/pipelines.html) |
+| **2. Acceleration methods** (the 5 building blocks) | [human/methods.md](human/methods.html) | [agents/methods.md](agents/methods.html) |
 
 - **Human** docs explain the *why* and *how* — design, trade-offs, when to use.
 - **Agents** docs are terse and machine-actionable — exact flags / env vars / file

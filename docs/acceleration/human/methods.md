@@ -1,6 +1,6 @@
 # Acceleration methods (human)
 
-The five building blocks the [pipelines](pipelines.md) are assembled from. Each
+The five building blocks the [pipelines](pipelines.html) are assembled from. Each
 section: what it does, how it works, the knobs, and the trade-off.
 
 ---
@@ -118,7 +118,7 @@ impact; verified to keep 31620/63240 tokens at the LTX 1080p shape.
 
 ## How they compose
 
-A pipeline is a subset of these five (see [pipelines.md](pipelines.md)). They are
+A pipeline is a subset of these five (see [pipelines.md](pipelines.html)). They are
 **structurally non-interfering** when each owns a distinct seam: one attention
 backend, one FFN precision, one token-set owner, one cache policy per stage. The
 `runtime/efficiency/` framework encodes this (`compose()` checks exclusive seams);

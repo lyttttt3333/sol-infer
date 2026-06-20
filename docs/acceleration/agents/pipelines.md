@@ -1,7 +1,7 @@
 # Optimization pipelines (agents)
 
 Exact entries, flags, env, params. GB200 warmup-excluded. See
-[../human/pipelines.md](../human/pipelines.md) for rationale.
+[../human/pipelines.md](../human/pipelines.html) for rationale.
 
 ## SANA-Video (1 GPU)
 - entry: `scripts/sana/sana_video_sglang_run.py`
