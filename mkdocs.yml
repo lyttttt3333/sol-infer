@@ -1,0 +1,40 @@
+site_name: Sol-LTX-Infer
+site_description: Accelerated video-diffusion inference — SANA-Video · Cosmos3-Super · LTX-2.3
+site_url: https://lyttttt3333.github.io/sol-infer/
+repo_url: https://github.com/lyttttt3333/sol-infer
+repo_name: lyttttt3333/sol-infer
+docs_dir: site_docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-sunny, name: Light mode }
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - navigation.sections
+    - toc.integrate
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc: { permalink: true }
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+# The TOC that strings the docs together (Home -> Pipelines -> Methods):
+nav:
+  - Home: index.md
+  - Optimization pipelines: pipelines.md
+  - Acceleration methods: acceleration.md
