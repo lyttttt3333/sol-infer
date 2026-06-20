@@ -1,6 +1,6 @@
 # GitHub Pages (Jekyll) config — serves docs/ as a themed site so the markdown
 # renders as web pages (not the raw GitHub view), e.g.
-#   https://efficient-large-model.github.io/Sol-LTX-Infer/acceleration/human/pipelines.html
+#   https://ltx-infer.github.io/Sol-LTX-Infer/acceleration/human/pipelines.html
 # To enable: repo Settings -> Pages -> Build from branch: main, folder /docs.
 title: Sol-LTX-Infer
 description: Accelerated video-diffusion inference — SANA-Video · Cosmos3-Super · LTX-2.3
