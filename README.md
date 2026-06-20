@@ -7,8 +7,9 @@
 <!-- TODO: fill in the real Homepage and arXiv URLs -->
 [🏠 Homepage](https://lyttttt3333.github.io/sol-infer/) &nbsp;·&nbsp;
 [📄 arXiv](https://arxiv.org/abs/XXXX.XXXXX) &nbsp;·&nbsp;
-[📖 Docs — Pipelines](https://lyttttt3333.github.io/sol-infer/pipelines/) &nbsp;·&nbsp;
-[📖 Docs — Methods](https://lyttttt3333.github.io/sol-infer/acceleration/)
+[📖 Docs — Pipelines](https://lyttttt3333.github.io/sol-infer/) &nbsp;·&nbsp;
+[📖 Docs — Methods](https://lyttttt3333.github.io/sol-infer/) &nbsp;·&nbsp;
+[↗ Sana Docs](https://nvlabs.github.io/Sana/docs/)
 
 </div>
 
@@ -27,7 +28,7 @@ All speedups are GB200, warmup-excluded, at each model's official spec.
 | **LTX-2.3** (1080p/10s, 1 GPU) | `scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh` | KWL fusion + cache + PISA + NVFP4 + token-prune | **~2.4×** |
 
 Each entry takes `baseline | fullopt` (SANA via flags). See
-**[Docs — Pipelines](https://lyttttt3333.github.io/sol-infer/pipelines/)**.
+**[Docs — Pipelines](https://lyttttt3333.github.io/sol-infer/)**.
 
 ## The five acceleration methods
 
@@ -37,7 +38,7 @@ Each entry takes `baseline | fullopt` (SANA via flags). See
 4. **Sparse attention (PISA)** — piecewise block-sparse video self-attention.
 5. **Token pruning** — drop low-salience video tokens at mid refine steps.
 
-Details and trade-offs: **[Docs — Methods](https://lyttttt3333.github.io/sol-infer/acceleration/)**.
+Details and trade-offs: **[Docs — Methods](https://lyttttt3333.github.io/sol-infer/)**.
 
 ## Quickstart
 
