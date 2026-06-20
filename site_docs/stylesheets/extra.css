@@ -1,0 +1,42 @@
+/* ===========================================
+   Sol-LTX-Infer Docs — NVIDIA Green theme
+   (matches the NVlabs/Sana docs template)
+   =========================================== */
+
+/* ---------- Color Variables ---------- */
+:root {
+  --md-primary-fg-color: #76b900;
+  --md-primary-fg-color--light: #8bc34a;
+  --md-primary-fg-color--dark: #5a8f00;
+
+  --md-accent-fg-color: #76b900;
+  --md-accent-fg-color--transparent: rgba(118, 185, 0, 0.1);
+
+  --md-text-font: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --md-code-font: "JetBrains Mono", "Fira Code", monospace;
+}
+
+/* Dark mode colors */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #76b900;
+  --md-primary-fg-color--light: #8bc34a;
+  --md-primary-fg-color--dark: #5a8f00;
+
+  --md-accent-fg-color: #76b900;
+
+  --md-default-bg-color: #0d1117;
+  --md-default-bg-color--light: #161b22;
+  --md-default-bg-color--lighter: #21262d;
+  --md-default-bg-color--lightest: #30363d;
+
+  --md-code-bg-color: #161b22;
+}
+
+[data-md-color-scheme="slate"] .md-content h1,
+[data-md-color-scheme="slate"] .md-typeset h1 {
+  color: #fff !important;
+}
+
+[data-md-color-scheme="slate"] .md-sidebar--primary .md-sidebar__scrollwrap {
+  background-color: #0d1117;
+}

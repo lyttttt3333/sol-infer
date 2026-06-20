@@ -1,8 +1,8 @@
 site_name: Sol-LTX-Infer
 site_description: Accelerated video-diffusion inference — SANA-Video · Cosmos3-Super · LTX-2.3
 site_url: https://lyttttt3333.github.io/sol-infer/
-repo_url: https://github.com/lyttttt3333/sol-infer
 repo_name: lyttttt3333/sol-infer
+repo_url: https://github.com/lyttttt3333/sol-infer
 docs_dir: site_docs
 
 theme:
@@ -10,31 +10,66 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
-      toggle: { icon: material/weather-night, name: Dark mode }
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: indigo
-      toggle: { icon: material/weather-sunny, name: Light mode }
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
   features:
     - navigation.instant
     - navigation.tracking
-    - navigation.top
     - navigation.sections
-    - toc.integrate
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
     - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
 
 markdown_extensions:
-  - admonition
-  - tables
-  - toc: { permalink: true }
-  - pymdownx.highlight
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - tables
+  - toc:
+      permalink: true
 
-# The TOC that strings the docs together (Home -> Pipelines -> Methods):
+# TOC that strings the docs together
 nav:
-  - Home: index.md
+  - Overview: index.md
   - Optimization pipelines: pipelines.md
   - Acceleration methods: acceleration.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/lyttttt3333/sol-infer
+  generator: false
+
+extra_css:
+  - stylesheets/extra.css
+
+copyright: Copyright &copy; 2026 Sol-LTX-Infer
