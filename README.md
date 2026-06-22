@@ -89,19 +89,14 @@ From the repo root, give the agent this goal:
 
 ```text
 /goal Execute the inference code for the three models using both baseline and full-opt
-settings with the following requirements. For the environment, you need to create a new
+settings with the following requirements. Refer to AGENTS.md for the environment creation,
+model download, and inference guides. For the environment, you need to create a new
 environment. For model weights, you are allowed to reuse existing weights if they are
 locally available; otherwise, you need to download them. Regarding adaptability, be aware
 that the provided guides for environment creation, download scripts, and inference may
 contain system incompatibilities, so you are expected to troubleshoot and adapt them to
 your specific machine.
 ```
-
-The agent reads **[`AGENTS.md`](AGENTS.md)** for the install details — a portable,
-three-section guide (create env / download models / run). It can also consult the
-**[Installation](https://lyttttt3333.github.io/sol-infer/installation/)** and
-**[Model Zoo](https://lyttttt3333.github.io/sol-infer/model_zoo/)** docs, or the human
-copy-paste [`QUICKSTART.md`](QUICKSTART.md).
 
 ## 📖 Getting started
 
