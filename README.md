@@ -48,11 +48,11 @@ support a wider range of models.
 
 ## ⚡ Models & speedups
 
-| Model | Size / GPUs | Acceleration line | Warm baseline → fullopt | Speedup |
-|---|---|---|---|---|
-| **[SANA-Video](https://lyttttt3333.github.io/sol-infer/pipelines/sana/)** | 2B / 1 | EasyCache + fusion + compile | 29.4 s → 10.6 s | **2.77×** |
-| **[Cosmos3-Super](https://lyttttt3333.github.io/sol-infer/pipelines/cosmos3/)** | 64B / 4 | TeaCache + step-selective NVFP4 | 97.2 s → 43.1 s | **~2.26×** |
-| **[LTX-2.3](https://lyttttt3333.github.io/sol-infer/pipelines/ltx/)** | 1080p/10s / 1 | KWL fusion + cache + PISA + NVFP4 + token-prune | 95.7 s → 39.2 s | **~2.4×** |
+| Model | Acceleration line | Speedup |
+|---|---|---|
+| **[SANA-Video](https://huggingface.co/Efficient-Large-Model/SANA-Video_2B_480p_diffusers)** | EasyCache + fusion + compile | **2.77×** |
+| **[Cosmos3-Super](https://huggingface.co/nvidia/Cosmos3-Super)** | TeaCache + step-selective NVFP4 | **~2.26×** |
+| **[LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)** | KWL fusion + cache + PISA + NVFP4 + token-prune | **~2.4×** |
 
 <sub>GB200, warmup-excluded, official spec per model. SANA 480p (832×480, 81f, 50 steps); Cosmos3 1280×720, 189f, 35 steps; LTX 1088×1920, 241f.</sub>
 
