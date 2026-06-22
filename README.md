@@ -22,31 +22,29 @@
   <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/🏠_Homepage-Sol--LTX--Infer-76b900?style=flat-square" alt="Homepage"/></a>
   <a href="https://arxiv.org/abs/XXXX.XXXXX"><img src="https://img.shields.io/badge/📄_arXiv-XXXX.XXXXX-b31b1b?style=flat-square" alt="arXiv"/></a>
   <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/📖_Docs-github.io-blue?style=flat-square" alt="Docs"/></a>
-  <a href="https://github.com/lyttttt3333/sol-infer"><img src="https://img.shields.io/github/stars/lyttttt3333/sol-infer?style=flat-square&label=⭐_Stars&color=76b900" alt="Stars"/></a>
   <a href="#-license"><img src="https://img.shields.io/badge/License-Apache_2.0-green?style=flat-square" alt="License"/></a>
 </p>
 
 <h4 align="center">
-  Three production video-diffusion models · one clean acceleration line each · five reusable methods · up to 2.77× on GB200
+  Three production video-diffusion models · one clean acceleration line each · five reusable methods
 </h4>
 
 ---
 
 **Sol-LTX-Infer** is an efficiency-oriented inference codebase for high-resolution video
 diffusion, built on [SGLang](https://github.com/sgl-project/sglang)'s `multimodal_gen`
-runtime. It takes three production models and reduces each to **one unambiguous
-acceleration line** (plus a dense `baseline`), composed from **five reusable
-acceleration methods** that each own a disjoint seam so they stack without interfering.
-All speedups below are measured on **GB200, warmup-excluded**, at each model's official
-spec.
+runtime. It features an **agent-native inference workflow** and reduces three production
+models into **one unambiguous acceleration line**. This is powered by a full-stack
+solution composed of **five reusable acceleration techniques**, delivering a **2× to 3×
+end-to-end speedup** across the three models. We are actively continuing development to
+support a wider range of models.
 
 ## 📰 News
 
-- **[2026/06]** 🔥 Full documentation site live: [3 pipeline designs + 5 acceleration techniques](https://lyttttt3333.github.io/sol-infer/), each technique with per-method literature surveys and paper links.
-- **[2026/06]** 🔥 SANA-Video fast path solved — `--max-autotune` (subprocess autotune + persistent Inductor cache) reaches **2.77×** at 480p (29.4 s → 10.6 s).
-- **[2026/06]** ✅ LTX-2.3 `fullopt` composes all five methods (KWL + cache + PISA + NVFP4 + token-prune) for **~2.4×**.
-- **[2026/06]** ✅ Cosmos3-Super `fullopt` (TeaCache + step-selective NVFP4) reaches **~2.26×** on 4×GB200.
-- **[2026/06]** ✅ Each model collapsed to a single `baseline | fullopt` entry; `scripts/` split per model.
+- **[2026/06]** 🔥 **SANA-Video** — EasyCache + kernel fusion + torch.compile → **2.77×** end-to-end (29.4 s → 10.6 s).
+- **[2026/06]** 🔥 **Cosmos3-Super** — TeaCache + step-selective NVFP4 → **~2.26×** end-to-end (4×GB200).
+- **[2026/06]** 🔥 **LTX-2.3** — KWL fusion + cache + PISA + NVFP4 + token-prune → **~2.4×** end-to-end.
+- **[2026/06]** 📖 **Docs release** — full documentation site live: [3 pipeline designs + 5 acceleration techniques](https://lyttttt3333.github.io/sol-infer/), each technique with per-method literature surveys and paper links.
 
 ## ⚡ Models & speedups
 
@@ -146,9 +144,3 @@ draw on TeaCache, EasyCache, SVDQuant/Nunchaku, FlashAttention,
 
 Apache-2.0. Model weights follow their respective upstream licenses (SANA-Video,
 NVIDIA Cosmos, Lightricks LTX) — see each model card.
-
-## ⭐ Star history
-
-<a href="https://star-history.com/#lyttttt3333/sol-infer&Date">
-  <img src="https://api.star-history.com/svg?repos=lyttttt3333/sol-infer&type=Date" width="60%" alt="Star History Chart"/>
-</a>
