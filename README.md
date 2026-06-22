@@ -48,26 +48,34 @@ support a wider range of models.
 
 ## ⚡ Models & speedups
 
-| Model | Acceleration line | Speedup |
-|---|---|---|
-| **[SANA-Video](https://huggingface.co/Efficient-Large-Model/SANA-Video_2B_480p_diffusers)** | EasyCache + fusion + compile | **2.77×** |
-| **[Cosmos3-Super](https://huggingface.co/nvidia/Cosmos3-Super)** | TeaCache + step-selective NVFP4 | **~2.26×** |
-| **[LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)** | KWL fusion + cache + PISA + NVFP4 + token-prune | **~2.4×** |
+<div align="center">
 
-<sub>GB200, warmup-excluded, official spec per model. SANA 480p (832×480, 81f, 50 steps); Cosmos3 1280×720, 189f, 35 steps; LTX 1088×1920, 241f.</sub>
+| Model | Params | Acceleration line | Speedup |
+|---|---|---|---|
+| **[SANA-Video](https://huggingface.co/Efficient-Large-Model/SANA-Video_2B_480p_diffusers)** | 2B | EasyCache + fusion + compile | **2.77×** |
+| **[Cosmos3-Super](https://huggingface.co/nvidia/Cosmos3-Super)** | 64B | TeaCache + step-selective NVFP4 | **~2.26×** |
+| **[LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)** | 22B | KWL fusion + cache + PISA + NVFP4 + token-prune | **~2.4×** |
+
+</div>
+
+<sub>GB200, warmup-excluded. SANA 480p (832×480, 81f, 50 steps); Cosmos3 1280×720, 189f, 35 steps; LTX 1088×1920, 241f.</sub>
 
 ## 🧩 The five acceleration methods
 
 Each method owns a distinct seam — so the framework composes them and each stays
 off==identity when disabled.
 
-| # | Method | What it does | Type | Docs |
-|---|---|---|---|---|
-| 1 | **Cache (step-skip)** | reuse a denoise step's output (TeaCache / EasyCache / SCSP) | lossy | [cache](https://lyttttt3333.github.io/sol-infer/techniques/cache/) |
-| 2 | **Quantization** | TransformerEngine NVFP4 4-bit, step-selective | lossy | [quant](https://lyttttt3333.github.io/sol-infer/techniques/quant/) |
-| 3 | **Kernel fusion (KWL)** | fuse the memory-bound DiT glue (AdaLN, QK-norm+RoPE, gates, FFN) | lossless | [kernel](https://lyttttt3333.github.io/sol-infer/techniques/kernel/) |
-| 4 | **Sparse attention (PISA)** | piecewise block-sparse video self-attention | lossy | [sparse](https://lyttttt3333.github.io/sol-infer/techniques/sparse/) |
-| 5 | **Token pruning** | drop low-salience video tokens at mid refine steps | lossy | [token-prune](https://lyttttt3333.github.io/sol-infer/techniques/token_prune/) |
+<div align="center">
+
+| # | Method | What it does |
+|---|---|---|
+| 1 | **[Cache](https://lyttttt3333.github.io/sol-infer/techniques/cache/)** | reuse a denoise step's output (TeaCache / EasyCache / SCSP) |
+| 2 | **[Quantization](https://lyttttt3333.github.io/sol-infer/techniques/quant/)** | TransformerEngine NVFP4 4-bit, step-selective |
+| 3 | **[Kernel fusion](https://lyttttt3333.github.io/sol-infer/techniques/kernel/)** | fuse the memory-bound DiT glue (AdaLN, QK-norm+RoPE, gates, FFN) |
+| 4 | **[Sparse attention](https://lyttttt3333.github.io/sol-infer/techniques/sparse/)** | piecewise block-sparse video self-attention |
+| 5 | **[Token pruning](https://lyttttt3333.github.io/sol-infer/techniques/token_prune/)** | drop low-salience video tokens at mid refine steps |
+
+</div>
 
 ## 🚀 Quick start
 
