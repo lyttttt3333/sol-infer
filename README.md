@@ -15,9 +15,7 @@
   <a href="https://lyttttt3333.github.io/sol-infer/">📖 Docs</a> &nbsp;|&nbsp;
   <a href="https://lyttttt3333.github.io/sol-infer/pipelines/sana/">Pipelines</a> &nbsp;|&nbsp;
   <a href="https://lyttttt3333.github.io/sol-infer/techniques/cache/">Techniques</a> &nbsp;|&nbsp;
-  <a href="https://lyttttt3333.github.io/sol-infer/installation/">Install</a> &nbsp;|&nbsp;
-  <a href="https://lyttttt3333.github.io/sol-infer/model_zoo/">Model Zoo</a> &nbsp;|&nbsp;
-  <a href="https://huggingface.co/Efficient-Large-Model">🤗 HuggingFace</a>
+  <a href="https://lyttttt3333.github.io/sol-infer/installation/">Install</a>
 </h3>
 
 <p align="center">
@@ -29,7 +27,7 @@
 </p>
 
 <h4 align="center">
-  Three production video-diffusion models · one clean acceleration line each · five reusable methods · up to 2.56× on GB200
+  Three production video-diffusion models · one clean acceleration line each · five reusable methods · up to 2.77× on GB200
 </h4>
 
 ---
@@ -45,7 +43,7 @@ spec.
 ## 📰 News
 
 - **[2026/06]** 🔥 Full documentation site live: [3 pipeline designs + 5 acceleration techniques](https://lyttttt3333.github.io/sol-infer/), each technique with per-method literature surveys and paper links.
-- **[2026/06]** 🔥 SANA-Video fast path solved — `--max-autotune` (subprocess autotune + persistent Inductor cache) reaches **2.56×** at 480p; cold-safe `default` mode gives **2.10×** anywhere.
+- **[2026/06]** 🔥 SANA-Video fast path solved — `--max-autotune` (subprocess autotune + persistent Inductor cache) reaches **2.77×** at 480p (29.4 s → 10.6 s).
 - **[2026/06]** ✅ LTX-2.3 `fullopt` composes all five methods (KWL + cache + PISA + NVFP4 + token-prune) for **~2.4×**.
 - **[2026/06]** ✅ Cosmos3-Super `fullopt` (TeaCache + step-selective NVFP4) reaches **~2.26×** on 4×GB200.
 - **[2026/06]** ✅ Each model collapsed to a single `baseline | fullopt` entry; `scripts/` split per model.
@@ -54,7 +52,7 @@ spec.
 
 | Model | Size / GPUs | Acceleration line | Warm baseline → fullopt | Speedup |
 |---|---|---|---|---|
-| **[SANA-Video](https://lyttttt3333.github.io/sol-infer/pipelines/sana/)** | 2B / 1 | EasyCache + fusion + compile | 28.5 s → 13.5 s (11.0 s warm) | **2.10× / 2.56×** |
+| **[SANA-Video](https://lyttttt3333.github.io/sol-infer/pipelines/sana/)** | 2B / 1 | EasyCache + fusion + compile | 29.4 s → 10.6 s | **2.77×** |
 | **[Cosmos3-Super](https://lyttttt3333.github.io/sol-infer/pipelines/cosmos3/)** | 64B / 4 | TeaCache + step-selective NVFP4 | 97.2 s → 43.1 s | **~2.26×** |
 | **[LTX-2.3](https://lyttttt3333.github.io/sol-infer/pipelines/ltx/)** | 1080p/10s / 1 | KWL fusion + cache + PISA + NVFP4 + token-prune | 95.7 s → 39.2 s | **~2.4×** |
 
