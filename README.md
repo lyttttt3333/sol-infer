@@ -77,27 +77,31 @@ off==identity when disabled.
 
 </div>
 
-## 🚀 Quick start
+## 🚀 Quick start (agent-native)
 
-```bash
-# 1. environment
-git clone https://github.com/lyttttt3333/sol-infer.git && cd sol-infer
-PYTHON_VERSION=3.12 bash scripts/create_code_conda_env.sh && conda activate "$PWD/.conda/ltx23"
+Sol-LTX-Infer is installed and launched the **agent-native** way. Rather than hand-running
+the setup steps, you hand a coding agent — OpenAI **Codex** or **Claude Code** — a single
+goal and let it create the environment, fetch the weights, and run all three models in
+both `baseline` and `fullopt` settings, **troubleshooting and adapting the scripts to
+your machine** as it goes.
 
-# 2. dependencies (torch 2.11+cu130, diffusers 0.38) + CUDA-JIT fixups
-uv pip install -e "$PWD/python[diffusion]" --prerelease=allow
-PYTHON_BIN=.conda/ltx23/bin/python bash scripts/postinstall_cuda_jit.sh   # add --with-te for NVFP4
+From the repo root, give the agent this goal:
 
-# 3. run (each entry takes `baseline | fullopt`)
-bash scripts/ltx/run_ltx23_sglang_hq_1080p10s.sh fullopt
-bash scripts/cosmos/slurm_cosmos3_super.sh fullopt
-.conda/ltx23/bin/python scripts/sana/sana_video_sglang_run.py \
-    --easycache 0.1 --linattn-bf16 --qkv-merge --compile   # add --max-autotune for peak
+```text
+/goal Execute the inference code for the three models using both baseline and full-opt
+settings with the following requirements. For the environment, you need to create a new
+environment. For model weights, you are allowed to reuse existing weights if they are
+locally available; otherwise, you need to download them. Regarding adaptability, be aware
+that the provided guides for environment creation, download scripts, and inference may
+contain system incompatibilities, so you are expected to troubleshoot and adapt them to
+your specific machine.
 ```
 
-Full guide: **[Installation](https://lyttttt3333.github.io/sol-infer/installation/)** ·
-**[Model Zoo](https://lyttttt3333.github.io/sol-infer/model_zoo/)** ·
-copy-paste [`QUICKSTART.md`](QUICKSTART.md) · portable/agent [`AGENTS.md`](AGENTS.md).
+The agent reads **[`AGENTS.md`](AGENTS.md)** for the install details — a portable,
+three-section guide (create env / download models / run). It can also consult the
+**[Installation](https://lyttttt3333.github.io/sol-infer/installation/)** and
+**[Model Zoo](https://lyttttt3333.github.io/sol-infer/model_zoo/)** docs, or the human
+copy-paste [`QUICKSTART.md`](QUICKSTART.md).
 
 ## 📖 Getting started
 
