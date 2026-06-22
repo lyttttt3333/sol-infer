@@ -1,8 +1,8 @@
 <p align="center" style="border-radius: 10px">
-  <img src="https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/asset/logo.png" width="35%" alt="Sol-LTX-Infer logo"/>
+  <img src="https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/asset/logo.png" width="35%" alt="Sol-Engine logo"/>
 </p>
 
-<h1 align="center">Sol-LTX-Infer</h1>
+<h1 align="center">Sol-Engine</h1>
 
 <h3 align="center">
   Accelerated video-diffusion inference —
@@ -19,7 +19,7 @@
 </h3>
 
 <p align="center">
-  <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/🏠_Homepage-Sol--LTX--Infer-76b900?style=flat-square" alt="Homepage"/></a>
+  <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/🏠_Homepage-Sol--Engine-76b900?style=flat-square" alt="Homepage"/></a>
   <a href="https://arxiv.org/abs/XXXX.XXXXX"><img src="https://img.shields.io/badge/📄_arXiv-XXXX.XXXXX-b31b1b?style=flat-square" alt="arXiv"/></a>
   <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/📖_Docs-github.io-blue?style=flat-square" alt="Docs"/></a>
   <a href="#-license"><img src="https://img.shields.io/badge/License-Apache_2.0-green?style=flat-square" alt="License"/></a>
@@ -31,7 +31,7 @@
 
 ---
 
-**Sol-LTX-Infer** is an efficiency-oriented inference codebase for high-resolution video
+**Sol-Engine** is an efficiency-oriented inference codebase for high-resolution video
 diffusion, built on [SGLang](https://github.com/sgl-project/sglang)'s `multimodal_gen`
 runtime. It features an **agent-native inference workflow** and reduces three production
 models into **one unambiguous acceleration line**. This is powered by a full-stack
@@ -79,7 +79,7 @@ off==identity when disabled.
 
 ## 🚀 Quick start (agent-native)
 
-Sol-LTX-Infer is installed and launched the **agent-native** way. Rather than hand-running
+Sol-Engine is installed and launched the **agent-native** way. Rather than hand-running
 the setup steps, you hand a coding agent — OpenAI **Codex** or **Claude Code** — a single
 goal and let it create the environment, fetch the weights, and run all three models in
 both `baseline` and `fullopt` settings, **troubleshooting and adapting the scripts to
@@ -129,9 +129,9 @@ draw on TeaCache, EasyCache, SVDQuant/Nunchaku, FlashAttention,
 ## 📌 Citation
 
 ```bibtex
-@misc{sol-ltx-infer-2026,
-  title  = {Sol-LTX-Infer: Accelerated Video-Diffusion Inference},
-  author = {Sol-LTX-Infer Contributors},
+@misc{sol-engine-2026,
+  title  = {Sol-Engine: Accelerated Video-Diffusion Inference},
+  author = {Sol-Engine Contributors},
   year   = {2026},
   howpublished = {\url{https://github.com/lyttttt3333/sol-infer}},
 }
