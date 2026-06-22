@@ -69,7 +69,7 @@ off==identity when disabled.
 
 | # | Method | What it does |
 |---|---|---|
-| 1 | **[Cache](https://lyttttt3333.github.io/sol-infer/techniques/cache/)** | reuse a denoise step's output (TeaCache / EasyCache / SCSP) |
+| 1 | **[Cache](https://lyttttt3333.github.io/sol-infer/techniques/cache/)** | reuse a denoise step's output (TeaCache / EasyCache / fix-step) |
 | 2 | **[Quantization](https://lyttttt3333.github.io/sol-infer/techniques/quant/)** | TransformerEngine NVFP4 4-bit, step-selective |
 | 3 | **[Kernel fusion](https://lyttttt3333.github.io/sol-infer/techniques/kernel/)** | fuse the memory-bound DiT glue (AdaLN, QK-norm+RoPE, gates, FFN) |
 | 4 | **[Sparse attention](https://lyttttt3333.github.io/sol-infer/techniques/sparse/)** | piecewise block-sparse video self-attention |
@@ -100,20 +100,10 @@ your specific machine.
 
 ## 📖 Getting started
 
-- 📚 **[Full documentation](https://lyttttt3333.github.io/sol-infer/)** — one MkDocs site, everything below linked
-- 🛠️ **[Installation](https://lyttttt3333.github.io/sol-infer/installation/)** — conda env, editable install, CUDA-JIT fixups
-- 🗂️ **[Model Zoo](https://lyttttt3333.github.io/sol-infer/model_zoo/)** — HF repos + download helpers
+- 📚 **[Full documentation](https://lyttttt3333.github.io/sol-infer/)** — a comprehensive guidebook to the whole project: pipeline designs, acceleration techniques, setup, and model references in one place
+- 🛠️ **[Installation](https://lyttttt3333.github.io/sol-infer/installation/)** — conda env, editable install, CUDA-JIT fixups, and the HF model repos + download helpers
 - 🎬 **Optimized pipelines** — [SANA-Video](https://lyttttt3333.github.io/sol-infer/pipelines/sana/) · [Cosmos3-Super](https://lyttttt3333.github.io/sol-infer/pipelines/cosmos3/) · [LTX-2.3](https://lyttttt3333.github.io/sol-infer/pipelines/ltx/)
 - ⚙️ **Acceleration techniques** — [Cache](https://lyttttt3333.github.io/sol-infer/techniques/cache/) · [Quantization](https://lyttttt3333.github.io/sol-infer/techniques/quant/) · [Kernel fusion](https://lyttttt3333.github.io/sol-infer/techniques/kernel/) · [Sparse attention](https://lyttttt3333.github.io/sol-infer/techniques/sparse/) · [Token pruning](https://lyttttt3333.github.io/sol-infer/techniques/token_prune/)
-
-## 🔬 Key techniques
-
-- **Step-skip caching** — TeaCache (accumulated rel-L1 of timestep-modulated input), EasyCache (calibration-free runtime adaptive), SCSP (stage-1 step-skip preset).
-- **Step-selective NVFP4** — TransformerEngine 4-bit GEMMs on the heavy linears, first/last denoise steps kept in BF16 where quality is most sensitive; graceful BF16 fallback off Blackwell.
-- **KWL kernel fusion** — hand-written Triton/CuTeDSL kernels collapse the memory-bound glue around attention/FFN (RMS+AdaLN, Q/K-norm+split-RoPE, dual modulation, all-9 Ada values, residual gate, FFN proj+GELU, audio QKVG, VAE GroupNorm+SiLU) into single launches; algorithm-lossless.
-- **PISA sparse attention** — piecewise block-sparse video self-attention (exact selected blocks + centroid remainder).
-- **Token pruning** — drop low-salience video tokens during the less-sensitive middle refine steps, then scatter back.
-- **Branch sharing** — CFG/STG block-0 self-attention and guidance-prefix sharing where branches are provably equivalent.
 
 ## ✅ To-do
 
