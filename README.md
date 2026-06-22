@@ -2,8 +2,6 @@
   <img src="https://raw.githubusercontent.com/lyttttt3333/sol-infer/main/site_docs/assets/logo.png" width="45%" alt="Sol-Engine logo"/>
 </p>
 
-<h1 align="center">Sol-Engine</h1>
-
 <h3 align="center">
   Accelerated video-diffusion inference —
   <a href="https://lyttttt3333.github.io/sol-infer/pipelines/sana/">SANA-Video</a> ·
