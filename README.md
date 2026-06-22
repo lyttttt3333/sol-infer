@@ -26,7 +26,7 @@
 </p>
 
 <h4 align="center">
-  Three production video-diffusion models · one clean acceleration line each · five reusable methods
+  Agent-native workflow · Full-stack acceleration techniques · Three T2V models, best implementations
 </h4>
 
 ---
