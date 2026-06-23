@@ -109,7 +109,7 @@ your specific machine.
 - [x] **Cosmos3-Super** acceleration line — TeaCache + step-selective NVFP4
 - [x] **LTX-2.3** acceleration line — KWL fusion + cache + PISA + NVFP4 + token-prune
 - [ ] More backends for each acceleration method
-- [ ] Agent-native workflow
+- [ ] Agent-native workflow without human-in-the-loop
 
 ## 🙏 Acknowledgements
 
