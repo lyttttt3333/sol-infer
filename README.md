@@ -24,7 +24,7 @@
 </p>
 
 <h4 align="center">
-  Agent-native workflow · Full-stack acceleration techniques · Three T2V models, best implementations
+  Agent-native workflow · Full-stack acceleration techniques · A wide range of video generation models
 </h4>
 
 ---
