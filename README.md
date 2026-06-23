@@ -105,13 +105,11 @@ your specific machine.
 
 ## ✅ To-do
 
-- [x] Single `baseline | fullopt` entry per model
-- [x] Per-model `scripts/` + versioned `prompts/`
-- [x] Full MkDocs documentation site (pipelines + techniques)
-- [x] SANA-Video max-autotune fast path
-- [ ] Fill the real Homepage / arXiv URLs
-- [ ] Public model + recipe release notes
-- [ ] More backends on the default lines (SVG2 / STA ablations)
+- [x] **SANA-Video** acceleration line — EasyCache + fusion + compile
+- [x] **Cosmos3-Super** acceleration line — TeaCache + step-selective NVFP4
+- [x] **LTX-2.3** acceleration line — KWL fusion + cache + PISA + NVFP4 + token-prune
+- [ ] More backends for each acceleration method
+- [ ] Agent-native workflow
 
 ## 🙏 Acknowledgements
 
