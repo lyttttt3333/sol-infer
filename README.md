@@ -139,5 +139,7 @@ draw on TeaCache, EasyCache, SVDQuant/Nunchaku, FlashAttention,
 
 ## 📄 License
 
-Apache-2.0. Model weights follow their respective upstream licenses (SANA-Video,
+Code in this repository is released under the Apache-2.0 license. The paper is
+available on arXiv under the arXiv.org perpetual, non-exclusive distribution
+license. Model weights follow their respective upstream licenses (SANA-Video,
 NVIDIA Cosmos, Lightricks LTX) — see each model card.
