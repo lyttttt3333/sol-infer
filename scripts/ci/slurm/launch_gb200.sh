@@ -11,8 +11,8 @@
 #   CONFIG_FILE       - path relative to srt-slurm repo root (e.g. recipes/gb200-fp8/1k1k/low-latency.yaml)
 #   RESULT_FILENAME   - prefix for output JSON filenames
 #   RUNNER_NAME       - GitHub Actions runner name (used to tag the Slurm job)
-#   SQUASH_FILE       - path to pre-imported sglang enroot squash file on Lustre
-#   NGINX_SQUASH_FILE - path to pre-imported nginx enroot squash file on Lustre
+#   SQUASH_FILE       - path to pre-imported sglang enroot squash file
+#   NGINX_SQUASH_FILE - path to pre-imported nginx enroot squash file
 #   SLURM_PARTITION   - Slurm partition (default: batch)
 #   SLURM_ACCOUNT     - Slurm account  (default: sglang)
 #   SRT_SLURM_BRANCH  - branch of srt-slurm repo to check out
@@ -44,15 +44,17 @@ set -x
 SLURM_PARTITION="${SLURM_PARTITION:-batch}"
 SLURM_ACCOUNT="${SLURM_ACCOUNT:-sglang}"
 SRT_SLURM_BRANCH="${SRT_SLURM_BRANCH:-sglang-nightly-regression}"
+MODEL_CACHE_ROOT="${MODEL_CACHE_ROOT:-/models}"
+SLURM_WORKSPACE_ROOT="${SLURM_WORKSPACE_ROOT:-${TMPDIR:-/tmp}/sglang-ci}"
 
 # ---------------------------------------------------------------------------
-# Resolve local model paths on Lustre (avoids re-downloading on each run)
+# Resolve local model paths when a cache is available.
 # ---------------------------------------------------------------------------
 if [[ "$MODEL_PREFIX" == "dsr1" && "$PRECISION" == "fp8" ]]; then
-    MODEL_PATH="/mnt/lustre01/models/deepseek-r1-0528"
+    MODEL_PATH="${DSR1_FP8_MODEL_PATH:-$MODEL_CACHE_ROOT/deepseek-r1-0528}"
     SRT_SLURM_MODEL_PREFIX="dsr1-fp8"
 elif [[ "$MODEL_PREFIX" == "dsr1" && "$PRECISION" == "fp4" ]]; then
-    MODEL_PATH="/mnt/lustre01/models/deepseek-r1-0528-fp4-v2/"
+    MODEL_PATH="${DSR1_FP4_MODEL_PATH:-$MODEL_CACHE_ROOT/deepseek-r1-0528-fp4-v2}"
     SRT_SLURM_MODEL_PREFIX="dsr1-fp4"
 else
     MODEL_PATH="$MODEL"
@@ -60,10 +62,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Set up per-runner Lustre workspace (cleaned before each run, accessible
-# to both the runner and compute nodes)
+# Set up per-runner workspace (cleaned before each run, accessible to both the
+# runner and compute nodes)
 # ---------------------------------------------------------------------------
-LUSTRE_WORKSPACE="/mnt/lustre01/users-public/sglang-ci/workspace/${RUNNER_NAME}"
+LUSTRE_WORKSPACE="$SLURM_WORKSPACE_ROOT/workspace/${RUNNER_NAME}"
 rm -rf "$LUSTRE_WORKSPACE"
 mkdir -p "$LUSTRE_WORKSPACE"
 

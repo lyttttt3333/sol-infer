@@ -2,7 +2,7 @@
     "1": {
       "inputs": {
         "base_url": "http://localhost:3000/v1",
-        "api_key": "sk-proj-1234567890"
+        "api_key": "EMPTY"
       },
       "class_type": "SGLDiffusionServerModel",
       "_meta": {

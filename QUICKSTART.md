@@ -1,7 +1,7 @@
 # QUICKSTART — run SANA-Video / Cosmos3-Super / LTX-2.3 (baseline + full-opt)
 
-Human, copy-paste quickstart for branch **v1_formal**. (For the agent-oriented,
-machine-portable rules see `AGENTS.md` — this file is the short human version.)
+Human, copy-paste quickstart. (For the agent-oriented, machine-portable rules
+see `AGENTS.md` — this file is the short human version.)
 
 **Goal.** Run inference for the three models in both `baseline` and `fullopt`
 settings, with:
@@ -19,7 +19,8 @@ SANA and LTX run on **1**.
 ## 1. Set up a fresh environment (one time)
 
 ```bash
-git clone https://github.com/lyttttt3333/sol-infer.git Sol-LTX-Infer && cd Sol-LTX-Infer
+git clone https://github.com/NVlabs/Sol-Video-Inference-Engine.git Sol-Video-Inference-Engine
+cd Sol-Video-Inference-Engine
 
 PYTHON_VERSION=3.12 bash scripts/create_code_conda_env.sh   # -> ./.conda/ltx23 (new env)
 conda activate "$PWD/.conda/ltx23"
@@ -108,7 +109,7 @@ Prompts are versioned under `prompts/<model>/` (each model uses only its own):
 | LTX-2.3 1080p/10s | 95.7 s | 39.2 s | ~2.4x |
 | Cosmos3-Super 64B | 97.2 s | 43.1 s | ~2.26x |
 
-## Known gotchas (already handled in v1_formal; see AGENTS.md for detail)
+## Known gotchas (already handled in the current main branch; see AGENTS.md for detail)
 - SANA `--compile` defaults to a **safe** inductor mode; `--max-autotune`
   (peak speed) needs the persistent-cache warm-up — a cold in-process
   max-autotune run deadlocks on a grouped-conv autotune.

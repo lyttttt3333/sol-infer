@@ -54,6 +54,10 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Local agent/private workspace metadata
+.claude/
+**/.claude/
+
 # Translations
 *.mo
 *.pot

@@ -1,25 +1,25 @@
 <p align="center" style="border-radius: 10px">
-  <img src="https://raw.githubusercontent.com/lyttttt3333/sol-infer/main/site_docs/assets/sol-engine-logo.png" width="45%" alt="Sol-Engine logo"/>
+  <img src="https://raw.githubusercontent.com/NVlabs/Sol-Video-Inference-Engine/main/site_docs/assets/sol-engine-logo.png" width="45%" alt="Sol-Engine logo"/>
 </p>
 
 <h3 align="center">
   Accelerated video-diffusion inference —
-  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/sana/">SANA-Video</a> ·
-  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/cosmos3/">Cosmos3-Super</a> ·
-  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/ltx/">LTX-2.3</a>
+  <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/pipelines/sana/">SANA-Video</a> ·
+  <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/pipelines/cosmos3/">Cosmos3-Super</a> ·
+  <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/pipelines/ltx/">LTX-2.3</a>
 </h3>
 
 <h3 align="center">
-  <a href="https://lyttttt3333.github.io/sol-infer/">📖 Docs</a> &nbsp;|&nbsp;
-  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/sana/">Pipelines</a> &nbsp;|&nbsp;
-  <a href="https://lyttttt3333.github.io/sol-infer/techniques/cache/">Techniques</a> &nbsp;|&nbsp;
-  <a href="https://lyttttt3333.github.io/sol-infer/installation/">Install</a>
+  <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/">📖 Docs</a> &nbsp;|&nbsp;
+  <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/pipelines/sana/">Pipelines</a> &nbsp;|&nbsp;
+  <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/cache/">Techniques</a> &nbsp;|&nbsp;
+  <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/installation/">Install</a>
 </h3>
 
 <p align="center">
   <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/"><img src="https://img.shields.io/badge/🏠_Homepage-Sol--Engine-76b900?style=flat-square" alt="Homepage"/></a>
   <a href="https://arxiv.org/abs/2606.23743"><img src="https://img.shields.io/badge/📄_arXiv-2606.23743-b31b1b?style=flat-square" alt="arXiv"/></a>
-  <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/📖_Docs-github.io-blue?style=flat-square" alt="Docs"/></a>
+  <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/"><img src="https://img.shields.io/badge/📖_Docs-github.io-blue?style=flat-square" alt="Docs"/></a>
   <a href="#-license"><img src="https://img.shields.io/badge/License-Apache_2.0-green?style=flat-square" alt="License"/></a>
 </p>
 
@@ -42,7 +42,7 @@ support a wider range of models.
 - **[2026/06]** 🔥 **SANA-Video** — EasyCache + kernel fusion + torch.compile → **~2.77×** end-to-end (29.4 s → 10.6 s).
 - **[2026/06]** 🔥 **Cosmos3-Super** — TeaCache + step-selective NVFP4 → **~2.26×** end-to-end (4×GB200).
 - **[2026/06]** 🔥 **LTX-2.3** — KWL fusion + cache + PISA + NVFP4 + token-prune → **~2.4×** end-to-end.
-- **[2026/06]** 📖 **Docs release** — full documentation site live: [3 pipeline designs + 5 acceleration techniques](https://lyttttt3333.github.io/sol-infer/), each technique with per-method literature surveys and paper links.
+- **[2026/06]** 📖 **Docs release** — full documentation site live: [3 pipeline designs + 5 acceleration techniques](https://nvlabs.github.io/Sol-Video-Inference-Engine/), each technique with per-method literature surveys and paper links.
 
 ## ⚡ Models & speedups
 
@@ -74,11 +74,11 @@ methods across these levels.
 
 | # | Method | What it does |
 |---|---|---|
-| 1 | **[Cache](https://lyttttt3333.github.io/sol-infer/techniques/cache/)** | reuse a denoise step's output (TeaCache / EasyCache / fix-step) |
-| 2 | **[Quantization](https://lyttttt3333.github.io/sol-infer/techniques/quant/)** | TransformerEngine NVFP4 4-bit, step-selective |
-| 3 | **[Kernel fusion](https://lyttttt3333.github.io/sol-infer/techniques/kernel/)** | fuse the memory-bound DiT glue (AdaLN, QK-norm+RoPE, gates, FFN) |
-| 4 | **[Sparse attention](https://lyttttt3333.github.io/sol-infer/techniques/sparse/)** | piecewise block-sparse video self-attention |
-| 5 | **[Token pruning](https://lyttttt3333.github.io/sol-infer/techniques/token_prune/)** | drop low-salience video tokens at mid refine steps |
+| 1 | **[Cache](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/cache/)** | reuse a denoise step's output (TeaCache / EasyCache / fix-step) |
+| 2 | **[Quantization](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/quant/)** | TransformerEngine NVFP4 4-bit, step-selective |
+| 3 | **[Kernel fusion](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/kernel/)** | fuse the memory-bound DiT glue (AdaLN, QK-norm+RoPE, gates, FFN) |
+| 4 | **[Sparse attention](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/sparse/)** | piecewise block-sparse video self-attention |
+| 5 | **[Token pruning](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/token_prune/)** | drop low-salience video tokens at mid refine steps |
 
 </div>
 
@@ -105,10 +105,10 @@ your specific machine.
 
 ## 📖 Getting started
 
-- 📚 **[Full documentation](https://lyttttt3333.github.io/sol-infer/)** — a comprehensive guidebook to the whole project: pipeline designs, acceleration techniques, setup, and model references in one place
-- 🛠️ **[Installation](https://lyttttt3333.github.io/sol-infer/installation/)** — conda env, editable install, CUDA-JIT fixups, and the HF model repos + download helpers
-- 🎬 **Optimized pipelines** — [SANA-Video](https://lyttttt3333.github.io/sol-infer/pipelines/sana/) · [Cosmos3-Super](https://lyttttt3333.github.io/sol-infer/pipelines/cosmos3/) · [LTX-2.3](https://lyttttt3333.github.io/sol-infer/pipelines/ltx/)
-- ⚙️ **Acceleration techniques** — [Cache](https://lyttttt3333.github.io/sol-infer/techniques/cache/) · [Quantization](https://lyttttt3333.github.io/sol-infer/techniques/quant/) · [Kernel fusion](https://lyttttt3333.github.io/sol-infer/techniques/kernel/) · [Sparse attention](https://lyttttt3333.github.io/sol-infer/techniques/sparse/) · [Token pruning](https://lyttttt3333.github.io/sol-infer/techniques/token_prune/)
+- 📚 **[Full documentation](https://nvlabs.github.io/Sol-Video-Inference-Engine/)** — a comprehensive guidebook to the whole project: pipeline designs, acceleration techniques, setup, and model references in one place
+- 🛠️ **[Installation](https://nvlabs.github.io/Sol-Video-Inference-Engine/installation/)** — conda env, editable install, CUDA-JIT fixups, and the HF model repos + download helpers
+- 🎬 **Optimized pipelines** — [SANA-Video](https://nvlabs.github.io/Sol-Video-Inference-Engine/pipelines/sana/) · [Cosmos3-Super](https://nvlabs.github.io/Sol-Video-Inference-Engine/pipelines/cosmos3/) · [LTX-2.3](https://nvlabs.github.io/Sol-Video-Inference-Engine/pipelines/ltx/)
+- ⚙️ **Acceleration techniques** — [Cache](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/cache/) · [Quantization](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/quant/) · [Kernel fusion](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/kernel/) · [Sparse attention](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/sparse/) · [Token pruning](https://nvlabs.github.io/Sol-Video-Inference-Engine/techniques/token_prune/)
 
 ## ✅ To-do
 
@@ -127,7 +127,7 @@ Built on [SGLang](https://github.com/sgl-project/sglang) and
 [Lightricks LTX-Video](https://github.com/Lightricks/LTX-Video). Acceleration methods
 draw on TeaCache, EasyCache, SVDQuant/Nunchaku, FlashAttention,
 [TransformerEngine](https://github.com/NVIDIA/TransformerEngine), and the sparse-attention
-/ token-reduction literature surveyed in the [docs](https://lyttttt3333.github.io/sol-infer/).
+/ token-reduction literature surveyed in the [docs](https://nvlabs.github.io/Sol-Video-Inference-Engine/).
 
 ## 📌 Citation
 

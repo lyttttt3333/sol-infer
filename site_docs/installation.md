@@ -11,8 +11,8 @@ This page mirrors the agent-ready setup path used by the repository.
 ## Environment
 
 ```bash
-git clone https://github.com/lyttttt3333/sol-infer.git Sol-LTX-Infer
-cd Sol-LTX-Infer
+git clone https://github.com/NVlabs/Sol-Video-Inference-Engine.git Sol-Video-Inference-Engine
+cd Sol-Video-Inference-Engine
 
 PYTHON_VERSION=3.12 bash scripts/create_code_conda_env.sh
 conda activate "$PWD/.conda/ltx23"

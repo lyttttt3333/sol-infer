@@ -1084,7 +1084,7 @@ class Cosmos3OmniTransformer(CachableDiT):
         self._prof_steps = 0
         self._prof_warmup = int(os.environ.get("SGLANG_COSMOS3_PROFILE_WARMUP", "5"))
         self._prof_dump = os.environ.get(
-            "SGLANG_COSMOS3_PROFILE_DUMP", "/home/yitongl/cosmos3-run/module_profile.json"
+            "SGLANG_COSMOS3_PROFILE_DUMP", "/tmp/sglang_cosmos3_module_profile.json"
         )
         try:
             self._prof_rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0

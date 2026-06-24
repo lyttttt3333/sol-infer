@@ -1,7 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=cosmos3-download
-#SBATCH --account=nvr_elm_llm
-#SBATCH --partition=cpu_datamover
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16

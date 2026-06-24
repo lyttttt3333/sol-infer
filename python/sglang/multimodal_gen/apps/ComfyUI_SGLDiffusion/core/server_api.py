@@ -16,13 +16,13 @@ from PIL import Image
 class SGLDiffusionServerAPI:
     """Client for SGLang Diffusion HTTP server API."""
 
-    def __init__(self, base_url: str, api_key: str = "sk-proj-1234567890"):
+    def __init__(self, base_url: str, api_key: str = "EMPTY"):
         """
         Initialize the API client.
 
         Args:
             base_url: Base URL of the SGLang Diffusion server (e.g., "http://localhost:30010/v1")
-            api_key: API key for authentication (default: "sk-proj-1234567890")
+            api_key: API key for authentication (default: "EMPTY")
         """
         # Ensure base_url doesn't end with /v1 if it's already there
         if base_url.endswith("/v1"):
@@ -518,9 +518,7 @@ class SGLDiffusionServerAPI:
 
 
 if __name__ == "__main__":
-    api = SGLDiffusionServerAPI(
-        base_url="http://localhost:30010/v1", api_key="sk-proj-1234567890"
-    )
+    api = SGLDiffusionServerAPI(base_url="http://localhost:30010/v1", api_key="EMPTY")
     model_info = api.get_model_info()
     print(api.get_model_info())
     if model_info.get("task_type") == "T2V" or model_info.get("task_type") == "I2V":

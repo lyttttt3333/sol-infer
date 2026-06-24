@@ -25,7 +25,8 @@ Creates a self-contained conda env `.conda/ltx23` (Python 3.12, torch 2.11+cu130
 diffusers 0.38) and installs the package in editable mode.
 
 ```bash
-git clone https://github.com/lyttttt3333/sol-infer.git Sol-LTX-Infer && cd Sol-LTX-Infer
+git clone https://github.com/NVlabs/Sol-Video-Inference-Engine.git Sol-Video-Inference-Engine
+cd Sol-Video-Inference-Engine
 
 # create the env (Python 3.12); writes to ./.conda/ltx23
 PYTHON_VERSION=3.12 bash scripts/create_code_conda_env.sh

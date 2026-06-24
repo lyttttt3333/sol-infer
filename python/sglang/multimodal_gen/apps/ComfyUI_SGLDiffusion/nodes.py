@@ -216,7 +216,7 @@ class SGLDiffusionServerModel:
                 "api_key": (
                     "STRING",
                     {
-                        "default": "sk-proj-1234567890",
+                        "default": "EMPTY",
                         "multiline": False,
                     },
                 ),

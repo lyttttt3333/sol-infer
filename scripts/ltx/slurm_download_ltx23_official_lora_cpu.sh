@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-#SBATCH -A nvr_elm_llm
 #SBATCH -p cpu
 #SBATCH -N 1
 #SBATCH --cpus-per-task=4

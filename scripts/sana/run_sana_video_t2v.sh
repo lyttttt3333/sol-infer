@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=sana-video-t2v
-#SBATCH --account=nvr_elm_llm
 #SBATCH --partition=batch
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=4
