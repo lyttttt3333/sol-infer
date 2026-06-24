@@ -6,9 +6,9 @@ Cache methods exploit algorithm-level redundancy across adjacent diffusion denoi
 
 | Pipeline | Cache path | Role |
 |---|---|---|
-| SANA-Video | EasyCache | Main SANA acceleration component |
 | Cosmos3-Super | TeaCache | Residual replay across denoising steps |
 | LTX-2.3 | Stage-specific cache | Part of the full LTX optimization stack |
+| SANA-Video | EasyCache | Main SANA acceleration component |
 
 ## Practical notes
 

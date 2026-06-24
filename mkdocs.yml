@@ -52,9 +52,9 @@ nav:
   - Overview: index.md
   - Installation: installation.md
   - Pipelines:
-      - SANA-Video: pipelines/sana.md
       - Cosmos3-Super: pipelines/cosmos3.md
       - LTX-2.3: pipelines/ltx.md
+      - SANA-Video: pipelines/sana.md
   - Techniques:
       - Cache: techniques/cache.md
       - Quantization: techniques/quant.md

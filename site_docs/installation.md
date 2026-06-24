@@ -6,7 +6,7 @@ This page mirrors the agent-ready setup path used by the repository.
 
 - NVIDIA GPU and driver support for CUDA 13.
 - `conda` or miniforge, `git`, and a Hugging Face account/token.
-- Cosmos3-Super 64B requires 4 GPUs. SANA-Video and LTX-2.3 run on 1 GPU.
+- Cosmos3-Super 64B uses 4xB200. LTX-2.3 and SANA-Video use 1xB200.
 
 ## Environment
 
@@ -38,13 +38,9 @@ Expected versions are torch 2.11.0+cu130 and diffusers 0.38.0. `torch.cuda.is_av
 export HF_HOME="$PWD/.hf_cache"
 huggingface-cli login
 
-huggingface-cli download Efficient-Large-Model/SANA-Video_2B_480p_diffusers
 huggingface-cli download nvidia/Cosmos3-Super
 huggingface-cli download Lightricks/LTX-2.3
+huggingface-cli download Efficient-Large-Model/SANA-Video_2B_480p_diffusers
 ```
 
-Convenience scripts are available under `scripts/sana/`, `scripts/cosmos/`, and `scripts/ltx/` for resumable or Slurm-based downloads.
-
-## Run modes
-
-Each pipeline exposes a dense `baseline` and an accelerated `fullopt` path. Use the pipeline pages for exact launch commands.
+Convenience scripts are available under `scripts/cosmos/`, `scripts/ltx/`, and `scripts/sana/` for resumable or Slurm-based downloads.

@@ -6,8 +6,8 @@ Kernel fusion reduces memory-bound overhead inside DiT blocks. The target is the
 
 | Pipeline | Fusion path | Role |
 |---|---|---|
-| SANA-Video | Linear attention BF16, QKV merge, compile | Part of the ~2.77x path |
-| LTX-2.3 | KWL fusion | Lossless operator-level optimization before lossy methods |
+| LTX-2.3 | KWL fusion | Operator-level optimization before other methods |
+| SANA-Video | Linear attention BF16, QKV merge, compile | Part of the 2.77x path |
 
 ## Scope
 
