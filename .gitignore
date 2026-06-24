@@ -72,7 +72,6 @@ instance/
 .scrapy
 
 # Sphinx documentation
-docs/_build/
 
 # PyBuilder
 .pybuilder/
@@ -170,7 +169,6 @@ cython_debug/
 *.swp
 
 # Documentation
-docs/_build
 
 # SGL
 benchmark/mmlu/data

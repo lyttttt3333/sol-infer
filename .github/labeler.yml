@@ -22,7 +22,7 @@ documentation:
     - any-glob-to-any-file:
       - '**/*.md'
       - '**/*.mdx'
-      - 'docs/**/*'
+      - 'site_docs/**/*'
       - 'README*'
       - 'docs_new/**/*'
 

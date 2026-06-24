@@ -32,7 +32,7 @@ repos:
         args:
           - --select=F401,F821
           - --fix
-        files: ^(benchmark/|docs/|examples/|python/sglang/|sgl-model-gateway/py_*|test/)
+        files: ^(benchmark/|examples/|python/sglang/|sgl-model-gateway/py_*|test/)
         exclude: |
           (?x)^(
           .*/__init__\.py$|
@@ -94,13 +94,6 @@ repos:
         files: ^test/registered/.*\.py$
         exclude: ^test/registered/.*/utils\.py$
         pass_filenames: false
-      - id: check-no-docs-changes
-        name: reject changes under legacy docs/
-        entry: python3 scripts/ci/check_no_docs_changes.py
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-commit]
       - id: rustfmt-sgl-model-gateway
         name: rustfmt sgl-model-gateway (nightly)
         entry: bash -c 'rustup component add --toolchain nightly rustfmt >/dev/null && cd sgl-model-gateway && cargo +nightly fmt -- --check'
@@ -114,9 +107,10 @@ repos:
         name: check doc links (offline)
         args: ["--config", ".github/linters/lychee.toml"]
         stages: [manual]
-        exclude: ^docs/_build/
+        exclude: ^site_docs/_build/
         files: |
           (?x)^(
             README\.md|
-            docs/.*\.(md|rst|ipynb)
+            site_docs/.*\.md|
+            docs_new/.*\.(md|mdx|ipynb)
           )$
