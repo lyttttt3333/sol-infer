@@ -1,7 +1,5 @@
 <p align="center" style="border-radius: 10px">
-  <a href="https://lyttttt3333.github.io/sol-infer/">
-    <img src="https://raw.githubusercontent.com/lyttttt3333/sol-infer/main/site_docs/assets/sol-engine-logo.png" width="45%" alt="Sol-Engine logo"/>
-  </a>
+  <img src="https://raw.githubusercontent.com/lyttttt3333/sol-infer/main/site_docs/assets/sol-engine-logo.png" width="45%" alt="Sol-Engine logo"/>
 </p>
 
 <h3 align="center">
