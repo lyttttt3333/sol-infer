@@ -5,7 +5,7 @@ baseline). All overlapping/experimental paths removed; every toggle is an explic
 flag/env. Speedups below are GB200, warmup-excluded, at each model's official spec.
 
 ## SANA-Video  =  EasyCache + fusion
-- Cache: **EasyCache** (`--easycache`, calibration-free) — the only step-skip method.
+- Cache: **EasyCache** (`--easycache`, calibration-free).
 - Fusion: `--compile` (torch.compile) + `--linattn-bf16` + `--qkv-merge`.
 - Removed: TeaCache, late-step-skip, TaylorSeer, NVFP4/ffn-lp quant. All flags explicit
   (no env-default switches). 720p LTX-2 VAE latent denorm fixed.
