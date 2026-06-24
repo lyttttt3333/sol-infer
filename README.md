@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/🏠_Homepage-Sol--Engine-76b900?style=flat-square" alt="Homepage"/></a>
-  <a href="https://arxiv.org/abs/XXXX.XXXXX"><img src="https://img.shields.io/badge/📄_arXiv-XXXX.XXXXX-b31b1b?style=flat-square" alt="arXiv"/></a>
+  <a href="https://arxiv.org/abs/2606.23743"><img src="https://img.shields.io/badge/📄_arXiv-2606.23743-b31b1b?style=flat-square" alt="arXiv"/></a>
   <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/📖_Docs-github.io-blue?style=flat-square" alt="Docs"/></a>
   <a href="#-license"><img src="https://img.shields.io/badge/License-Apache_2.0-green?style=flat-square" alt="License"/></a>
 </p>
@@ -125,11 +125,15 @@ draw on TeaCache, EasyCache, SVDQuant/Nunchaku, FlashAttention,
 ## 📌 Citation
 
 ```bibtex
-@misc{sol-engine-2026,
-  title  = {Sol-Engine: Accelerated Video-Diffusion Inference},
-  author = {Sol-Engine Contributors},
-  year   = {2026},
-  howpublished = {\url{https://github.com/lyttttt3333/sol-infer}},
+@misc{li2026solvideoinferenceengine,
+  title         = {Sol Video Inference Engine: Agent-Native Full-Stack Acceleration Framework for Efficient Video Generation},
+  author        = {Yitong Li and Junsong Chen and Haopeng Li and Haozhe Liu and Jincheng Yu and Ligeng Zhu and Ping Luo and Song Han and Enze Xie},
+  year          = {2026},
+  eprint        = {2606.23743},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CV},
+  doi           = {10.48550/arXiv.2606.23743},
+  url           = {https://arxiv.org/abs/2606.23743},
 }
 ```
 

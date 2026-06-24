@@ -19,7 +19,7 @@ SANA and LTX run on **1**.
 ## 1. Set up a fresh environment (one time)
 
 ```bash
-git clone <repo-url> Sol-LTX-Infer && cd Sol-LTX-Infer
+git clone https://github.com/lyttttt3333/sol-infer.git Sol-LTX-Infer && cd Sol-LTX-Infer
 
 PYTHON_VERSION=3.12 bash scripts/create_code_conda_env.sh   # -> ./.conda/ltx23 (new env)
 conda activate "$PWD/.conda/ltx23"
