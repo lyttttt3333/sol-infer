@@ -17,7 +17,7 @@
 </h3>
 
 <p align="center">
-  <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/🏠_Homepage-Sol--Engine-76b900?style=flat-square" alt="Homepage"/></a>
+  <a href="https://nvlabs.github.io/Sol-Video-Inference-Engine/"><img src="https://img.shields.io/badge/🏠_Homepage-Sol--Engine-76b900?style=flat-square" alt="Homepage"/></a>
   <a href="https://arxiv.org/abs/2606.23743"><img src="https://img.shields.io/badge/📄_arXiv-2606.23743-b31b1b?style=flat-square" alt="arXiv"/></a>
   <a href="https://lyttttt3333.github.io/sol-infer/"><img src="https://img.shields.io/badge/📖_Docs-github.io-blue?style=flat-square" alt="Docs"/></a>
   <a href="#-license"><img src="https://img.shields.io/badge/License-Apache_2.0-green?style=flat-square" alt="License"/></a>
