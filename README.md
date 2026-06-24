@@ -61,14 +61,14 @@ support a wider range of models.
 ## 🧩 The five acceleration methods
 
 Video diffusion inference exposes redundancy at three complementary levels. At
-the algorithm level, adjacent denoising steps run structurally similar
+the **algorithm level**, adjacent denoising steps run structurally similar
 computations over slowly changing latents, so cache can reuse or skip step
-outputs. At the model level, long spatiotemporal sequences contain redundant
+outputs. At the **model level**, long spatiotemporal sequences contain redundant
 tokens and attention interactions, motivating sparse attention and token
-pruning. At the kernel level, DiT blocks repeatedly launch memory-bound work
+pruning. At the **kernel level**, DiT blocks repeatedly launch memory-bound work
 around GEMMs, layout movement, normalization, activation, and precision
 conversion, which quantization and fusion reduce. Sol-Engine composes the five
-methods across these levels, and each remains off==identity when disabled.
+methods across these levels.
 
 <div align="center">
 
