@@ -137,11 +137,11 @@ Local quick-look artifacts:
 
 | Variant | Threshold | Total s | Total x | Denoise s | Denoise x | Hits | Skipped steps | Visual readout |
 |---|---:|---:|---:|---:|---:|---:|---|---|
-| Baseline | - | 50.305 | 1.000 | 44.385 | 1.000 | - | - | Normal greenhouse/botanist output. |
-| TeaCache t1.05/start5 | 1.05 | 49.475 | 1.017 | 43.979 | 1.009 | 6 | `10,13,16,19,22,25` | Fog/noise overlay; not visually acceptable. |
-| TeaCache t1.10/start5 | 1.10 | 45.847 | 1.097 | 40.870 | 1.086 | 10 | `5,8,11,14,17,20,23,26,29,32` | Fog/noise overlay; not visually acceptable. |
-| TeaCache t1.15/start5 | 1.15 | 38.662 | 1.301 | 33.362 | 1.330 | 10 | `5,8,11,14,17,20,23,26,29,32` | Fog/noise overlay; not visually acceptable. |
-| TeaCache t1.20/start5 | 1.20 | 55.403 | 0.908 | 31.734 | 1.399 | 10 | `5,8,11,14,17,20,23,26,29,32` | Fog/noise overlay; not visually acceptable. Total time had a decode/postprocess outlier. |
+| Baseline | - | 50.305 | ~1.000 | 44.385 | ~1.000 | - | - | Normal greenhouse/botanist output. |
+| TeaCache t1.05/start5 | 1.05 | 49.475 | ~1.017 | 43.979 | ~1.009 | 6 | `10,13,16,19,22,25` | Fog/noise overlay; not visually acceptable. |
+| TeaCache t1.10/start5 | 1.10 | 45.847 | ~1.097 | 40.870 | ~1.086 | 10 | `5,8,11,14,17,20,23,26,29,32` | Fog/noise overlay; not visually acceptable. |
+| TeaCache t1.15/start5 | 1.15 | 38.662 | ~1.301 | 33.362 | ~1.330 | 10 | `5,8,11,14,17,20,23,26,29,32` | Fog/noise overlay; not visually acceptable. |
+| TeaCache t1.20/start5 | 1.20 | 55.403 | ~0.908 | 31.734 | ~1.399 | 10 | `5,8,11,14,17,20,23,26,29,32` | Fog/noise overlay; not visually acceptable. Total time had a decode/postprocess outlier. |
 
 Readout:
 
@@ -202,18 +202,18 @@ Run setup:
 
 | Variant | Total s | Total x | Denoise s | Denoise x | Hits/computes | Skipped steps | Visual readout |
 |---|---:|---:|---:|---:|---|---|---|
-| Baseline | 45.277 | 1.000 | 40.662 | 1.000 | - | - | Normal greenhouse/botanist output. |
-| TeaCache t1.15/start16/max2 | 28.329 | 1.598 | 25.730 | 1.580 | 12/6 | `16,17,19,20,22,23,25,26,28,29,31,33` | Visually usable. No gray fog/noise overlay in first, middle, or late frames. |
-| TeaCache t1.15/start20/max2 | 31.759 | 1.426 | 29.168 | 1.394 | 9/5 | `20,21,23,24,26,27,29,30,32` | Visually usable and more conservative than start16. |
-| TeaCache t1.30/start20/max2 | 31.164 | 1.453 | 28.547 | 1.424 | 9/5 | `20,21,23,24,26,27,29,30,32` | Visually usable; same skip pattern as t1.15/start20 in this prompt. |
+| Baseline | 45.277 | ~1.000 | 40.662 | ~1.000 | - | - | Normal greenhouse/botanist output. |
+| TeaCache t1.15/start16/max2 | 28.329 | ~1.598 | 25.730 | ~1.580 | 12/6 | `16,17,19,20,22,23,25,26,28,29,31,33` | Visually usable. No gray fog/noise overlay in first, middle, or late frames. |
+| TeaCache t1.15/start20/max2 | 31.759 | ~1.426 | 29.168 | ~1.394 | 9/5 | `20,21,23,24,26,27,29,30,32` | Visually usable and more conservative than start16. |
+| TeaCache t1.30/start20/max2 | 31.164 | ~1.453 | 28.547 | ~1.424 | 9/5 | `20,21,23,24,26,27,29,30,32` | Visually usable; same skip pattern as t1.15/start20 in this prompt. |
 
 Recommendation from this run:
 
 - Use `TeaCache t1.15/start16/max2` when the goal is strongest 16B speedup on
-  this setup; it reached `1.58x` denoise speedup and `1.60x` total generation
+  this setup; it reached `~1.58x` denoise speedup and `~1.60x` total generation
   speedup.
 - Use `TeaCache t1.15/start20/max2` as a conservative fallback; it still reached
-  `1.39x` denoise speedup and `1.43x` total speedup with fewer skipped steps.
+  `~1.39x` denoise speedup and `~1.43x` total speedup with fewer skipped steps.
 - The old start5 result should stay marked rejected because it was produced by
   the pre-fix residual baseline bug.
 
@@ -268,14 +268,14 @@ Prompt themes:
 
 | Variant | Skipped steps per sample | Total x | Denoise x | Mean PSNR dB | Worst min-frame PSNR dB | Mean abs diff | Visual readout |
 |---|---:|---:|---:|---:|---:|---:|---|
-| Baseline | 0 | 1.000 | 1.000 | - | - | - | Reference. |
-| TeaCache t1.15/start16/max2 | 12 | 1.490 | 1.496 | 27.24 | 21.49 | 6.80 | Best usable setting in this sweep. Generally close to baseline in sampled frames. |
-| TeaCache t1.15/start10/max3 | 18 | 1.881 | 1.940 | 22.72 | 16.73 | 12.28 | Faster but visibly drifts on motion-heavy prompts; borderline. |
-| TeaCache t1.30/start8/max4 | 20 | 2.054 | 2.144 | 21.21 | 16.64 | 15.35 | Clear quality drop on animal/water and person prompts. |
-| TeaCache t1.50/start5/max8 | 25 | 2.606 | 2.841 | 18.88 | 15.02 | 22.21 | Not acceptable; blur and subject drift are obvious. |
-| TeaCache t2.00/start0/max8 | 29 | 3.402 | 3.930 | 18.28 | 13.84 | 24.22 | Very aggressive; only a few denoise steps compute. Usually broken visually. |
-| TeaCache t2.50/start0/max10 | 30 | 3.661 | 4.331 | 17.43 | 13.58 | 27.01 | Broken visually. |
-| TeaCache t3.00/start0/max12 | 30 | 3.698 | 4.368 | 16.44 | 13.54 | 30.65 | Broken visually; little speed gain over t2.50. |
+| Baseline | 0 | ~1.000 | ~1.000 | - | - | - | Reference. |
+| TeaCache t1.15/start16/max2 | 12 | ~1.490 | ~1.496 | 27.24 | 21.49 | 6.80 | Best usable setting in this sweep. Generally close to baseline in sampled frames. |
+| TeaCache t1.15/start10/max3 | 18 | ~1.881 | ~1.940 | 22.72 | 16.73 | 12.28 | Faster but visibly drifts on motion-heavy prompts; borderline. |
+| TeaCache t1.30/start8/max4 | 20 | ~2.054 | ~2.144 | 21.21 | 16.64 | 15.35 | Clear quality drop on animal/water and person prompts. |
+| TeaCache t1.50/start5/max8 | 25 | ~2.606 | ~2.841 | 18.88 | 15.02 | 22.21 | Not acceptable; blur and subject drift are obvious. |
+| TeaCache t2.00/start0/max8 | 29 | ~3.402 | ~3.930 | 18.28 | 13.84 | 24.22 | Very aggressive; only a few denoise steps compute. Usually broken visually. |
+| TeaCache t2.50/start0/max10 | 30 | ~3.661 | ~4.331 | 17.43 | 13.58 | 27.01 | Broken visually. |
+| TeaCache t3.00/start0/max12 | 30 | ~3.698 | ~4.368 | 16.44 | 13.54 | 30.65 | Broken visually; little speed gain over t2.50. |
 
 Skip examples:
 
@@ -301,9 +301,9 @@ Visual spot checks from the local `compare_prompt*_mid.jpg` frames:
 Recommendation from the 10-sample sweep:
 
 - Keep `TeaCache t1.15/start16/max2` as the quality-preserving 16B setting:
-  `1.49x` total and `1.50x` denoise speedup with the best PSNR.
+  `~1.49x` total and `~1.50x` denoise speedup with the best PSNR.
 - Treat `TeaCache t1.15/start10/max3` as a speed-first candidate only after
-  manual visual approval: it reaches `1.88x` total and `1.94x` denoise speedup,
+  manual visual approval: it reaches `~1.88x` total and `~1.94x` denoise speedup,
   but visual drift is already visible in several prompts.
 - Reject `t1.30/start8/max4` and more aggressive settings for general use in
   the current implementation. They are useful boundary data, but the PSNR and
@@ -362,33 +362,33 @@ Summary over both prompts:
 
 | Pipeline | Variant | Avg total x | Avg stage1 x | Stage-1 skipped steps | Hits/computes | Readout |
 |---|---|---:|---:|---|---|---|
-| HQ 15-step | TeaCache 0.04/start6 | 0.992 | 1.323 | 6-13 | 24/27 | Conservative skip count. Stage-1 speedup exists, total is neutral/slightly slower. |
-| HQ 15-step | TeaCache 0.06/start5 | 0.930 | 1.413 | 5-13 | 27/30 | More stage-1 skip, worse total in offloaded run. |
-| HQ 15-step | TeaCache 0.08/start5 | 0.930 | 1.403 | 5-13 | 27/30 | Similar to 0.06/start5; no extra total benefit here. |
-| Non-HQ 30-step | TeaCache 0.04/start6 | 1.009 | 1.295 | 8 stage-1 steps | 8/16 | Only neutral/slightly positive end-to-end setting in this run. |
-| Non-HQ 30-step | TeaCache 0.06/start5 | 0.907 | 1.428 | 10 stage-1 steps | 10/15 | Better stage-1 speedup, worse total due uncached overhead. |
-| Non-HQ 30-step | TeaCache 0.08/start5 | 0.907 | 1.485 | 11 stage-1 steps | 11/14 | Best stage-1 speedup, not best total in this setup. |
+| HQ 15-step | TeaCache 0.04/start6 | ~0.992 | ~1.323 | 6-13 | 24/27 | Conservative skip count. Stage-1 speedup exists, total is neutral/slightly slower. |
+| HQ 15-step | TeaCache 0.06/start5 | ~0.930 | ~1.413 | 5-13 | 27/30 | More stage-1 skip, worse total in offloaded run. |
+| HQ 15-step | TeaCache 0.08/start5 | ~0.930 | ~1.403 | 5-13 | 27/30 | Similar to 0.06/start5; no extra total benefit here. |
+| Non-HQ 30-step | TeaCache 0.04/start6 | ~1.009 | ~1.295 | 8 stage-1 steps | 8/16 | Only neutral/slightly positive end-to-end setting in this run. |
+| Non-HQ 30-step | TeaCache 0.06/start5 | ~0.907 | ~1.428 | 10 stage-1 steps | 10/15 | Better stage-1 speedup, worse total due uncached overhead. |
+| Non-HQ 30-step | TeaCache 0.08/start5 | ~0.907 | ~1.485 | 11 stage-1 steps | 11/14 | Best stage-1 speedup, not best total in this setup. |
 
 Per-prompt timing:
 
 | Pipeline | Prompt | Variant | Total s | Total x | Stage1 s | Stage1 x | Stage2 s | Stage-1 skipped steps | Hits/computes |
 |---|---:|---|---:|---:|---:|---:|---:|---|---|
-| HQ 15-step | 0 | KWL baseline | 343.07 | 1.000 | 150.67 | 1.000 | 68.27 | - | - |
-| HQ 15-step | 0 | TeaCache 0.04/start6 | 342.34 | 1.002 | 114.26 | 1.319 | 87.30 | 6-13 | 24/27 |
-| HQ 15-step | 0 | TeaCache 0.06/start5 | 345.97 | 0.992 | 105.85 | 1.423 | 88.39 | 5-13 | 27/30 |
-| HQ 15-step | 0 | TeaCache 0.08/start5 | 346.26 | 0.991 | 106.19 | 1.419 | 91.22 | 5-13 | 27/30 |
-| Non-HQ 30-step | 0 | KWL baseline | 242.78 | 1.000 | 166.49 | 1.000 | 31.91 | - | - |
-| Non-HQ 30-step | 0 | TeaCache 0.04/start6 | 238.66 | 1.017 | 128.81 | 1.293 | 38.10 | 6,8,11,13,16,18,21,24 | 8/16 |
-| Non-HQ 30-step | 0 | TeaCache 0.06/start5 | 286.78 | 0.847 | 114.97 | 1.448 | 33.39 | 5,7,9,12,14,16,19,21,23,26 | 10/15 |
-| Non-HQ 30-step | 0 | TeaCache 0.08/start5 | 286.78 | 0.847 | 110.68 | 1.504 | 33.31 | 5,7,9,11,14,16,18,20,23,25,28 | 11/14 |
-| HQ 15-step | 1 | KWL baseline | 351.06 | 1.000 | 148.46 | 1.000 | 68.17 | - | - |
-| HQ 15-step | 1 | TeaCache 0.04/start6 | 357.29 | 0.983 | 111.85 | 1.327 | 85.70 | 6-13 | 24/27 |
-| HQ 15-step | 1 | TeaCache 0.06/start5 | 404.04 | 0.869 | 105.89 | 1.402 | 86.08 | 5-13 | 27/30 |
-| HQ 15-step | 1 | TeaCache 0.08/start5 | 404.12 | 0.869 | 107.07 | 1.387 | 88.57 | 5-13 | 27/30 |
-| Non-HQ 30-step | 1 | KWL baseline | 267.71 | 1.000 | 165.03 | 1.000 | 32.38 | - | - |
-| Non-HQ 30-step | 1 | TeaCache 0.04/start6 | 267.71 | 1.000 | 127.15 | 1.298 | 33.76 | 6,8,11,13,16,18,21,24 | 8/16 |
-| Non-HQ 30-step | 1 | TeaCache 0.06/start5 | 276.47 | 0.968 | 117.18 | 1.408 | 33.21 | 5,7,9,12,14,16,19,21,23,26 | 10/15 |
-| Non-HQ 30-step | 1 | TeaCache 0.08/start5 | 276.47 | 0.968 | 112.59 | 1.466 | 33.10 | 5,7,9,11,14,16,18,20,23,25,28 | 11/14 |
+| HQ 15-step | 0 | KWL baseline | 343.07 | ~1.000 | 150.67 | ~1.000 | 68.27 | - | - |
+| HQ 15-step | 0 | TeaCache 0.04/start6 | 342.34 | ~1.002 | 114.26 | ~1.319 | 87.30 | 6-13 | 24/27 |
+| HQ 15-step | 0 | TeaCache 0.06/start5 | 345.97 | ~0.992 | 105.85 | ~1.423 | 88.39 | 5-13 | 27/30 |
+| HQ 15-step | 0 | TeaCache 0.08/start5 | 346.26 | ~0.991 | 106.19 | ~1.419 | 91.22 | 5-13 | 27/30 |
+| Non-HQ 30-step | 0 | KWL baseline | 242.78 | ~1.000 | 166.49 | ~1.000 | 31.91 | - | - |
+| Non-HQ 30-step | 0 | TeaCache 0.04/start6 | 238.66 | ~1.017 | 128.81 | ~1.293 | 38.10 | 6,8,11,13,16,18,21,24 | 8/16 |
+| Non-HQ 30-step | 0 | TeaCache 0.06/start5 | 286.78 | ~0.847 | 114.97 | ~1.448 | 33.39 | 5,7,9,12,14,16,19,21,23,26 | 10/15 |
+| Non-HQ 30-step | 0 | TeaCache 0.08/start5 | 286.78 | ~0.847 | 110.68 | ~1.504 | 33.31 | 5,7,9,11,14,16,18,20,23,25,28 | 11/14 |
+| HQ 15-step | 1 | KWL baseline | 351.06 | ~1.000 | 148.46 | ~1.000 | 68.17 | - | - |
+| HQ 15-step | 1 | TeaCache 0.04/start6 | 357.29 | ~0.983 | 111.85 | ~1.327 | 85.70 | 6-13 | 24/27 |
+| HQ 15-step | 1 | TeaCache 0.06/start5 | 404.04 | ~0.869 | 105.89 | ~1.402 | 86.08 | 5-13 | 27/30 |
+| HQ 15-step | 1 | TeaCache 0.08/start5 | 404.12 | ~0.869 | 107.07 | ~1.387 | 88.57 | 5-13 | 27/30 |
+| Non-HQ 30-step | 1 | KWL baseline | 267.71 | ~1.000 | 165.03 | ~1.000 | 32.38 | - | - |
+| Non-HQ 30-step | 1 | TeaCache 0.04/start6 | 267.71 | ~1.000 | 127.15 | ~1.298 | 33.76 | 6,8,11,13,16,18,21,24 | 8/16 |
+| Non-HQ 30-step | 1 | TeaCache 0.06/start5 | 276.47 | ~0.968 | 117.18 | ~1.408 | 33.21 | 5,7,9,12,14,16,19,21,23,26 | 10/15 |
+| Non-HQ 30-step | 1 | TeaCache 0.08/start5 | 276.47 | ~0.968 | 112.59 | ~1.466 | 33.10 | 5,7,9,11,14,16,18,20,23,25,28 | 11/14 |
 
 Full TeaCache notes are also in [teacache.md](teacache.md).
 

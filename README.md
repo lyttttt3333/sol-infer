@@ -39,7 +39,7 @@ support a wider range of models.
 
 ## 📰 News
 
-- **[2026/06]** 🔥 **SANA-Video** — EasyCache + kernel fusion + torch.compile → **2.77×** end-to-end (29.4 s → 10.6 s).
+- **[2026/06]** 🔥 **SANA-Video** — EasyCache + kernel fusion + torch.compile → **~2.77×** end-to-end (29.4 s → 10.6 s).
 - **[2026/06]** 🔥 **Cosmos3-Super** — TeaCache + step-selective NVFP4 → **~2.26×** end-to-end (4×GB200).
 - **[2026/06]** 🔥 **LTX-2.3** — KWL fusion + cache + PISA + NVFP4 + token-prune → **~2.4×** end-to-end.
 - **[2026/06]** 📖 **Docs release** — full documentation site live: [3 pipeline designs + 5 acceleration techniques](https://lyttttt3333.github.io/sol-infer/), each technique with per-method literature surveys and paper links.
@@ -50,7 +50,7 @@ support a wider range of models.
 
 | Model | Params | Acceleration line | Speedup |
 |---|---|---|---|
-| **[SANA-Video](https://huggingface.co/Efficient-Large-Model/SANA-Video_2B_480p_diffusers)** | 2B | EasyCache + fusion + compile | **2.77×** |
+| **[SANA-Video](https://huggingface.co/Efficient-Large-Model/SANA-Video_2B_480p_diffusers)** | 2B | EasyCache + fusion + compile | **~2.77×** |
 | **[Cosmos3-Super](https://huggingface.co/nvidia/Cosmos3-Super)** | 64B | TeaCache + step-selective NVFP4 | **~2.26×** |
 | **[LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)** | 22B | KWL fusion + cache + PISA + NVFP4 + token-prune | **~2.4×** |
 

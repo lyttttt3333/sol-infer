@@ -42,13 +42,13 @@ These benchmarks are provided for reference under one specific setup and command
 
 | Stage / Metric | `u1r2` (s) | `u1r1` baseline (s) | Speedup |
 |---|---:|---:|---:|
-| InputValidation | 0.1060 | 0.1029 | 0.97x |
-| TextEncoding | 1.3965 | 2.2261 | 1.59x |
-| LatentPreparation | 0.0002 | 0.0002 | 1.00x |
-| TimestepPreparation | 0.0003 | 0.0004 | 1.33x |
-| Denoising | 52.6358 | 71.6785 | 1.36x |
-| Decoding | 7.6708 | 13.4314 | 1.75x |
-| **Total** | **63.74** | **90.63** | **1.42x** |
+| InputValidation | 0.1060 | 0.1029 | ~0.97x |
+| TextEncoding | 1.3965 | 2.2261 | ~1.59x |
+| LatentPreparation | 0.0002 | 0.0002 | ~1.00x |
+| TimestepPreparation | 0.0003 | 0.0004 | ~1.33x |
+| Denoising | 52.6358 | 71.6785 | ~1.36x |
+| Decoding | 7.6708 | 13.4314 | ~1.75x |
+| **Total** | **63.74** | **90.63** | **~1.42x** |
 
 ### Memory Usage
 
@@ -61,7 +61,7 @@ These benchmarks are provided for reference under one specific setup and command
 
 ## Summary
 
-- End-to-end latency improves from `90.63s` to `63.74s` (`1.42x`).
-- Main gains come from `Denoising` (`1.36x`) and `Decoding` (`1.75x`).
+- End-to-end latency improves from `90.63s` to `63.74s` (`~1.42x`).
+- Main gains come from `Denoising` (`~1.36x`) and `Decoding` (`~1.75x`).
 - Absolute memory usage drops noticeably on Ring-SP (`Peak GPU Memory -7.33GB`, `Peak Allocated -7.05GB`).
 - Overhead ratio rises (`+7.9pp`), so future tuning can focus on reducing communication/runtime overhead while preserving the latency gain.

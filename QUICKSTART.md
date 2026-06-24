@@ -104,7 +104,7 @@ Prompts are versioned under `prompts/<model>/` (each model uses only its own):
 
 | Model | baseline | full-opt | speedup |
 |---|---|---|---|
-| SANA-Video 480p | 28.5 s | 13.5 s (`--compile`) / 11.0 s (`--max-autotune`, warm) | 2.1x / **2.56x** |
+| SANA-Video 480p | 28.5 s | 13.5 s (`--compile`) / 11.0 s (`--max-autotune`, warm) | ~2.1x / **~2.56x** |
 | LTX-2.3 1080p/10s | 95.7 s | 39.2 s | ~2.4x |
 | Cosmos3-Super 64B | 97.2 s | 43.1 s | ~2.26x |
 

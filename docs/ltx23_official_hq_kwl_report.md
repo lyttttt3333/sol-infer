@@ -62,9 +62,9 @@ Installed modules in the 22B official transformer:
 
 | Variant | Output | E2E wall time | Speedup vs faithful baseline | Stage 1 denoise | Stage 2 denoise | Slurm job |
 |---|---:|---:|---:|---:|---:|---:|
-| Official faithful HQ baseline | outputs/ltx23-official-hq-pipeline-1080p10s/official_hq/out.mp4 | 321.71s | 1.00x | 74s | 27s | 3017945 |
-| Official HQ + KWL kernels | outputs/ltx23-official-hq-kwl-pipeline-1080p10s/official_hq_kwl/out.mp4 | 256.27s | 1.26x | 68s | 26s | 3018695 |
-| Official HQ + KWL kernels, second process | outputs/ltx23-official-hq-kwl-warm-1080p10s/official_hq_kwl/out.mp4 | 287.33s | 1.12x | 68s | 24s | 3018994 |
+| Official faithful HQ baseline | outputs/ltx23-official-hq-pipeline-1080p10s/official_hq/out.mp4 | 321.71s | ~1.00x | 74s | 27s | 3017945 |
+| Official HQ + KWL kernels | outputs/ltx23-official-hq-kwl-pipeline-1080p10s/official_hq_kwl/out.mp4 | 256.27s | ~1.26x | 68s | 26s | 3018695 |
+| Official HQ + KWL kernels, second process | outputs/ltx23-official-hq-kwl-warm-1080p10s/official_hq_kwl/out.mp4 | 287.33s | ~1.12x | 68s | 24s | 3018994 |
 
 Notes:
 

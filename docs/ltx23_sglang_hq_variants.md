@@ -134,10 +134,10 @@ Latest validated 1080p 10s matrix, prompt `antique brass clockwork train`,
 
 | Variant | Total s | Denoise s | Total speedup vs KWL | Denoise speedup vs KWL | Notes |
 |---|---:|---:|---:|---:|---|
-| `kwl` | 69.120 | 63.646 | 1.000x | 1.000x | lossless KWL baseline for this matrix |
-| `kwl_cache` | 60.598 | 55.075 | 1.141x | 1.156x | PAB start=6, stage2 PAB off |
-| `kwl_sparse` | 61.405 | 56.008 | 1.126x | 1.136x | sparse only |
-| `kwl_sparse_cache` | 53.778 | 48.004 | 1.285x | 1.326x | best current combined setting |
+| `kwl` | 69.120 | 63.646 | ~1.000x | ~1.000x | lossless KWL baseline for this matrix |
+| `kwl_cache` | 60.598 | 55.075 | ~1.141x | ~1.156x | PAB start=6, stage2 PAB off |
+| `kwl_sparse` | 61.405 | 56.008 | ~1.126x | ~1.136x | sparse only |
+| `kwl_sparse_cache` | 53.778 | 48.004 | ~1.285x | ~1.326x | best current combined setting |
 
 Artifacts:
 
