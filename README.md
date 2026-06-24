@@ -6,16 +6,16 @@
 
 <h3 align="center">
   Accelerated video-diffusion inference —
-  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/">Cosmos3-Super</a> ·
-  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/">LTX-2.3</a> ·
-  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/">SANA-Video</a>
+  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/sana/">SANA-Video</a> ·
+  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/cosmos3/">Cosmos3-Super</a> ·
+  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/ltx/">LTX-2.3</a>
 </h3>
 
 <h3 align="center">
   <a href="https://lyttttt3333.github.io/sol-infer/">📖 Docs</a> &nbsp;|&nbsp;
-  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/">Pipelines</a> &nbsp;|&nbsp;
-  <a href="https://lyttttt3333.github.io/sol-infer/acceleration/">Acceleration</a> &nbsp;|&nbsp;
-  <a href="AGENTS.md">Run guide</a>
+  <a href="https://lyttttt3333.github.io/sol-infer/pipelines/sana/">Pipelines</a> &nbsp;|&nbsp;
+  <a href="https://lyttttt3333.github.io/sol-infer/techniques/cache/">Techniques</a> &nbsp;|&nbsp;
+  <a href="https://lyttttt3333.github.io/sol-infer/installation/">Install</a>
 </h3>
 
 <p align="center">
@@ -41,10 +41,10 @@ support a wider range of models.
 
 ## 📰 News
 
-- **[2026/06]** 🔥 **Cosmos3-Super** — TeaCache + NVFP4 → **~2.26×** end-to-end (4×GB200).
-- **[2026/06]** 🔥 **LTX-2.3** — kernel fusion + cache + PISA + NVFP4 + token-prune → **~2.4×** end-to-end.
 - **[2026/06]** 🔥 **SANA-Video** — EasyCache + kernel fusion + torch.compile → **~2.77×** end-to-end (29.4 s → 10.6 s).
-- **[2026/06]** 📖 **Docs release** — three-page documentation site live: [overview + pipelines + acceleration methods](https://lyttttt3333.github.io/sol-infer/).
+- **[2026/06]** 🔥 **Cosmos3-Super** — TeaCache + step-selective NVFP4 → **~2.26×** end-to-end (4×GB200).
+- **[2026/06]** 🔥 **LTX-2.3** — KWL fusion + cache + PISA + NVFP4 + token-prune → **~2.4×** end-to-end.
+- **[2026/06]** 📖 **Docs release** — full documentation site live: [3 pipeline designs + 5 acceleration techniques](https://lyttttt3333.github.io/sol-infer/), each technique with per-method literature surveys and paper links.
 
 ## ⚡ Models & speedups
 
@@ -52,9 +52,9 @@ support a wider range of models.
 
 | Model | Params | Acceleration line | Speedup |
 |---|---|---|---|
-| **[Cosmos3-Super](https://huggingface.co/nvidia/Cosmos3-Super)** | 64B | TeaCache + NVFP4 | **~2.26×** |
-| **[LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)** | 22B | kernel fusion + cache + PISA + NVFP4 + token-prune | **~2.4×** |
 | **[SANA-Video](https://huggingface.co/Efficient-Large-Model/SANA-Video_2B_480p_diffusers)** | 2B | EasyCache + fusion + compile | **~2.77×** |
+| **[Cosmos3-Super](https://huggingface.co/nvidia/Cosmos3-Super)** | 64B | TeaCache + step-selective NVFP4 | **~2.26×** |
+| **[LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3)** | 22B | KWL fusion + cache + PISA + NVFP4 + token-prune | **~2.4×** |
 
 </div>
 
@@ -76,11 +76,11 @@ methods across these levels.
 
 | # | Method | What it does |
 |---|---|---|
-| 1 | **[Cache](https://lyttttt3333.github.io/sol-infer/acceleration/#cache)** | reuse denoising work (TeaCache / EasyCache / stage-1 cache) |
-| 2 | **[Quantization](https://lyttttt3333.github.io/sol-infer/acceleration/#quantization)** | TransformerEngine NVFP4 4-bit |
-| 3 | **[Kernel fusion](https://lyttttt3333.github.io/sol-infer/acceleration/#kernel-fusion)** | fuse the memory-bound DiT glue (AdaLN, QK-norm+RoPE, gates, FFN) |
-| 4 | **[Sparse attention](https://lyttttt3333.github.io/sol-infer/acceleration/#sparse-attention)** | piecewise block-sparse video self-attention |
-| 5 | **[Token pruning](https://lyttttt3333.github.io/sol-infer/acceleration/#token-pruning)** | drop low-salience video tokens at mid refine steps |
+| 1 | **[Cache](https://lyttttt3333.github.io/sol-infer/techniques/cache/)** | reuse a denoise step's output (TeaCache / EasyCache / fix-step) |
+| 2 | **[Quantization](https://lyttttt3333.github.io/sol-infer/techniques/quant/)** | TransformerEngine NVFP4 4-bit, step-selective |
+| 3 | **[Kernel fusion](https://lyttttt3333.github.io/sol-infer/techniques/kernel/)** | fuse the memory-bound DiT glue (AdaLN, QK-norm+RoPE, gates, FFN) |
+| 4 | **[Sparse attention](https://lyttttt3333.github.io/sol-infer/techniques/sparse/)** | piecewise block-sparse video self-attention |
+| 5 | **[Token pruning](https://lyttttt3333.github.io/sol-infer/techniques/token_prune/)** | drop low-salience video tokens at mid refine steps |
 
 </div>
 
@@ -107,16 +107,16 @@ your specific machine.
 
 ## 📖 Getting started
 
-- 📚 **[Full documentation](https://lyttttt3333.github.io/sol-infer/)** — overview, pipeline designs, acceleration methods, and citation
-- 🎬 **[Optimized pipelines](https://lyttttt3333.github.io/sol-infer/pipelines/)** — Cosmos3-Super · LTX-2.3 · SANA-Video
-- ⚙️ **[Acceleration methods](https://lyttttt3333.github.io/sol-infer/acceleration/)** — Cache · Quantization · Kernel fusion · Sparse attention · Token pruning
-- 🛠️ **[Run guide](AGENTS.md)** — environment creation, model downloads, and baseline/fullopt inference commands
+- 📚 **[Full documentation](https://lyttttt3333.github.io/sol-infer/)** — a comprehensive guidebook to the whole project: pipeline designs, acceleration techniques, setup, and model references in one place
+- 🛠️ **[Installation](https://lyttttt3333.github.io/sol-infer/installation/)** — conda env, editable install, CUDA-JIT fixups, and the HF model repos + download helpers
+- 🎬 **Optimized pipelines** — [SANA-Video](https://lyttttt3333.github.io/sol-infer/pipelines/sana/) · [Cosmos3-Super](https://lyttttt3333.github.io/sol-infer/pipelines/cosmos3/) · [LTX-2.3](https://lyttttt3333.github.io/sol-infer/pipelines/ltx/)
+- ⚙️ **Acceleration techniques** — [Cache](https://lyttttt3333.github.io/sol-infer/techniques/cache/) · [Quantization](https://lyttttt3333.github.io/sol-infer/techniques/quant/) · [Kernel fusion](https://lyttttt3333.github.io/sol-infer/techniques/kernel/) · [Sparse attention](https://lyttttt3333.github.io/sol-infer/techniques/sparse/) · [Token pruning](https://lyttttt3333.github.io/sol-infer/techniques/token_prune/)
 
 ## ✅ To-do
 
-- [x] **Cosmos3-Super** acceleration line — TeaCache + NVFP4
-- [x] **LTX-2.3** acceleration line — kernel fusion + cache + PISA + NVFP4 + token-prune
 - [x] **SANA-Video** acceleration line — EasyCache + fusion + compile
+- [x] **Cosmos3-Super** acceleration line — TeaCache + step-selective NVFP4
+- [x] **LTX-2.3** acceleration line — KWL fusion + cache + PISA + NVFP4 + token-prune
 - [ ] More backends for each acceleration method
 - [ ] Agent-native workflow without human-in-the-loop
 
