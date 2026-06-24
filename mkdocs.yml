@@ -2,8 +2,8 @@ site_name: Sol-Engine Documentation
 site_description: Agent-native full-stack acceleration for video-diffusion inference
 site_author: Sol-Engine Team
 site_url: https://lyttttt3333.github.io/sol-infer/
-repo_name: lyttttt3333/sol-infer
 repo_url: https://github.com/lyttttt3333/sol-infer
+repo_name: lyttttt3333/sol-infer
 docs_dir: site_docs
 
 theme:
@@ -12,63 +12,38 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-night, name: Dark mode }
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-sunny, name: Light mode }
   features:
     - navigation.instant
     - navigation.tracking
-    - navigation.sections
-    - navigation.expand
     - navigation.top
-    - search.suggest
-    - search.highlight
+    - navigation.sections
+    - toc.integrate
     - content.code.copy
-
-plugins:
-  - search
 
 markdown_extensions:
   - admonition
-  - pymdownx.details
-  - pymdownx.highlight:
-      anchor_linenums: true
-  - pymdownx.inlinehilite
-  - pymdownx.superfences
   - tables
-  - toc:
-      permalink: true
+  - toc: { permalink: true }
+  - pymdownx.highlight
+  - pymdownx.superfences
 
 nav:
   - Overview: index.md
-  - Installation: installation.md
-  - Pipelines:
-      - Cosmos3-Super: pipelines/cosmos3.md
-      - LTX-2.3: pipelines/ltx.md
-      - SANA-Video: pipelines/sana.md
-  - Techniques:
-      - Cache: techniques/cache.md
-      - Quantization: techniques/quant.md
-      - Kernel fusion: techniques/kernel.md
-      - Sparse attention: techniques/sparse.md
-      - Token pruning: techniques/token_prune.md
+  - Optimization pipelines: pipelines.md
+  - Acceleration methods: acceleration.md
 
 extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/lyttttt3333/sol-infer
   generator: false
-
-extra_css:
-  - stylesheets/extra.css
 
 copyright: Copyright &copy; 2026 Sol-Engine Team
