@@ -1,79 +1,50 @@
 # Installation
 
-## Requirements
+This page mirrors the agent-ready setup path used by the repository.
 
-- Python >= 3.10.0 (Recommend to use [Anaconda](https://www.anaconda.com/download/#linux) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html))
-- [PyTorch >= 2.5.1+cu12.4](https://pytorch.org/)
+## Prerequisites
 
-## Quick Install
+- NVIDIA GPU and driver support for CUDA 13.
+- `conda` or miniforge, `git`, and a Hugging Face account/token.
+- Cosmos3-Super 64B requires 4 GPUs. SANA-Video and LTX-2.3 run on 1 GPU.
 
-```bash
-git clone https://github.com/NVlabs/Sana.git
-cd Sana
-
-bash ./environment_setup.sh sana
-# or you can install each components step by step following environment_setup.sh
-```
-
-## Hardware Requirements
-
-| Model | VRAM Required |
-|-------|---------------|
-| Sana-0.6B | 9GB |
-| Sana-1.6B | 12GB |
-| 4-bit Quantized | < 8GB |
-
-!!! Note
-    All the tests are done on A100 GPUs. Different GPU versions may vary.
-
-## Diffusers Installation
-
-To use Sana with `diffusers`, make sure to upgrade to the latest version:
+## Environment
 
 ```bash
-pip install git+https://github.com/huggingface/diffusers
+git clone https://github.com/lyttttt3333/sol-infer.git Sol-LTX-Infer
+cd Sol-LTX-Infer
+
+PYTHON_VERSION=3.12 bash scripts/create_code_conda_env.sh
+conda activate "$PWD/.conda/ltx23"
+
+uv pip install -e "$PWD/python[diffusion]" --prerelease=allow
+
+PYTHON_BIN=.conda/ltx23/bin/python bash scripts/postinstall_cuda_jit.sh
 ```
 
-## Quick Start with Diffusers
+Add `--with-te` to `scripts/postinstall_cuda_jit.sh` when using the NVFP4 path for Cosmos3-Super or LTX-2.3.
 
-```python
-import torch
-from diffusers import SanaPipeline
-
-pipe = SanaPipeline.from_pretrained(
-    "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers",
-    torch_dtype=torch.bfloat16,
-)
-pipe.to("cuda")
-
-pipe.vae.to(torch.bfloat16)
-pipe.text_encoder.to(torch.bfloat16)
-
-prompt = 'a cyberpunk cat with a neon sign that says "Sana"'
-image = pipe(
-    prompt=prompt,
-    height=1024,
-    width=1024,
-    guidance_scale=4.5,
-    num_inference_steps=20,
-    generator=torch.Generator(device="cuda").manual_seed(42),
-)[0]
-
-image[0].save("sana.png")
-```
-
-## Optional: Docker
+## Verify
 
 ```bash
-# Build Docker image
-docker build -t sana .
-
-# Run inference with Docker
-docker run --gpus all -it sana python scripts/inference.py
+.conda/ltx23/bin/python -c "import torch, diffusers, sglang; print(torch.__version__, diffusers.__version__, torch.cuda.is_available())"
 ```
 
-## Next Steps
+Expected versions are torch 2.11.0+cu130 and diffusers 0.38.0. `torch.cuda.is_available()` is false on CPU-only setup hosts.
 
-- [Model Zoo](model_zoo.md) - Choose your model
-- [SANA-Sprint](sana_sprint.md) - Fast inference mode with 1-4 steps generations
-- [SANA-Video](sana_video.md) - Video Gen with Linear Attention and Linear Block KV-Cache
+## Model downloads
+
+```bash
+export HF_HOME="$PWD/.hf_cache"
+huggingface-cli login
+
+huggingface-cli download Efficient-Large-Model/SANA-Video_2B_480p_diffusers
+huggingface-cli download nvidia/Cosmos3-Super
+huggingface-cli download Lightricks/LTX-2.3
+```
+
+Convenience scripts are available under `scripts/sana/`, `scripts/cosmos/`, and `scripts/ltx/` for resumable or Slurm-based downloads.
+
+## Run modes
+
+Each pipeline exposes a dense `baseline` and an accelerated `fullopt` path. Use the pipeline pages for exact launch commands.

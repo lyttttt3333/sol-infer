@@ -1,14 +1,15 @@
-site_name: Sana Documentation
-site_description: Documentation for Sana - High-quality Diffusion Models for Images and Videos
-site_author: Sana Team
+site_name: Sol-Engine Documentation
+site_description: Agent-native full-stack acceleration for video-diffusion inference
+site_author: Sol-Engine Team
 site_url: https://lyttttt3333.github.io/sol-infer/
 repo_name: lyttttt3333/sol-infer
-docs_dir: site_docs
 repo_url: https://github.com/lyttttt3333/sol-infer
+docs_dir: site_docs
+
 theme:
   name: material
+  logo: assets/sol-engine-logo.png
   palette:
-    # Light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
       primary: custom
@@ -16,7 +17,6 @@ theme:
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
-    # Dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       primary: custom
@@ -30,70 +30,45 @@ theme:
     - navigation.sections
     - navigation.expand
     - navigation.top
-    - navigation.indexes
     - search.suggest
     - search.highlight
-    - content.tabs.link
     - content.code.copy
-    - content.code.annotate
-  icon:
-    repo: fontawesome/brands/github
-  logo: https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/asset/logo.png
-  favicon: https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/asset/logo.png
+
 plugins:
   - search
+
 markdown_extensions:
+  - admonition
+  - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
-  - pymdownx.snippets
   - pymdownx.superfences
-  - pymdownx.tabbed:
-      alternate_style: true
-  - admonition
-  - pymdownx.details
-  - pymdownx.emoji:
-      emoji_index: !!python/name:material.extensions.emoji.twemoji
-      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - tables
   - toc:
       permalink: true
+
 nav:
   - Overview: index.md
-  - Getting Started:
-      - Installation: installation.md
-      - Model Zoo: model_zoo.md
-  - Image Generation:
-      - SANA: sana.md
-      - SANA-Sprint: sana_sprint.md
-      - 4-bit Quant: 4bit_sana.md
-      - 8-bit Quant: 8bit_sana.md
-      - Inference Scaling: inference_scaling/inference_scaling.md
-  - Video Generation:
-      - SANA-Video: sana_video.md
-      - SANA-Streaming: sana_streaming.md
-      - SANA-WM: sana_wm.md
-      - Video Inference: sana_video_inference.md
-      - LongSANA: longsana.md
-      - SANA-WM Benchmark: sana-wm-bench.md
-  - Post Training:
-      - Cosmos-RL: sana_cosmos_rl.md
-      - Sol-RL: sol_rl.md
-  - Advanced:
-      - ControlNet: sana_controlnet.md
-      - LoRA & DreamBooth: sana_lora_dreambooth.md
-  - Integrations:
-      - ComfyUI: ComfyUI/comfyui.md
-      - SGLang: sglang.md
-  - Evaluation:
-      - Metrics Toolkit: metrics_toolkit.md
+  - Installation: installation.md
+  - Pipelines:
+      - SANA-Video: pipelines/sana.md
+      - Cosmos3-Super: pipelines/cosmos3.md
+      - LTX-2.3: pipelines/ltx.md
+  - Techniques:
+      - Cache: techniques/cache.md
+      - Quantization: techniques/quant.md
+      - Kernel fusion: techniques/kernel.md
+      - Sparse attention: techniques/sparse.md
+      - Token pruning: techniques/token_prune.md
+
 extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/lyttttt3333/sol-infer
   generator: false
+
 extra_css:
   - stylesheets/extra.css
-extra_javascript:
-  - stylesheets/extra.js
-copyright: Copyright &copy; 2024-2025 Sana Team
+
+copyright: Copyright &copy; 2026 Sol-Engine Team
