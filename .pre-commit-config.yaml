@@ -111,6 +111,5 @@ repos:
         files: |
           (?x)^(
             README\.md|
-            site_docs/.*\.md|
-            docs_new/.*\.(md|mdx|ipynb)
+            site_docs/.*\.md
           )$

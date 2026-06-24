@@ -24,7 +24,6 @@ documentation:
       - '**/*.mdx'
       - 'site_docs/**/*'
       - 'README*'
-      - 'docs_new/**/*'
 
 # Dependencies
 dependencies:

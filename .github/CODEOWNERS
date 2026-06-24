@@ -1,8 +1,6 @@
 .github @merrymercy @Fridge003 @ispobock @Kangyan-Zhou @bingxche
 /docker @Fridge003 @ispobock @HaiShaw @ishandhanani @yctseng0211
 /docker/npu.Dockerfile @ping1jing2 @iforgetmyname @whybeyoung
-/docs @wisclmy0611 @zijiexia
-/docs_new @wisclmy0611 @zijiexia @Richardczl98 @JustinTong0323
 /python/pyproject.toml @merrymercy @Fridge003 @ispobock
 /python/sglang/jit_kernel @DarkSharpness @BBuf @celve @HydraQYH @yuan-luo
 /python/sglang/jit_kernel/diffusion @yingluosanqian @BBuf @mickqian
@@ -86,8 +84,6 @@
 /python/sglang/srt/function_call/gemma4_detector.py @CatherineSue @JustinTong0323 @kpham-sgl
 /python/sglang/srt/models/gemma4_*.py @kpham-sgl
 /python/sglang/srt/multimodal/processors/gemma4.py @mickqian @JustinTong0323 @yhyang201 @yuan-luo @kpham-sgl
-/docs_new/cookbook/autoregressive/Google/Gemma4.mdx @wisclmy0611 @zijiexia @Richardczl98 @kpham-sgl
-/docs_new/src/snippets/autoregressive/gemma4-deployment.jsx @wisclmy0611 @zijiexia @Richardczl98 @kpham-sgl
 /python/sglang/srt/speculative/ngram_*.py @hnyls2002 @Qiaolin-Yu @kpham-sgl
 /python/sglang/srt/speculative/cpp_ngram @hnyls2002 @Qiaolin-Yu @kpham-sgl
 /python/sglang/srt/speculative/frozen_kv_mtp_*.py @hnyls2002 @Qiaolin-Yu @kpham-sgl

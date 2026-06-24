@@ -191,7 +191,6 @@ work_dirs/
 *.csv
 
 !logo.png
-!docs_new/images/*.png
 
 # Prerequisites
 *.d
